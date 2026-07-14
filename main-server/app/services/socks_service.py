@@ -190,8 +190,8 @@ class SocksService:
                 UPDATE socks_proxies
                 SET last_checked_at=now(),
                     last_latency_ms=:latency,
-                    success_rate=:rate,
-                    fail_count=CASE WHEN :rate < 50 THEN fail_count+1 ELSE fail_count END
+                    success_rate=CAST(:rate AS NUMERIC),
+                    fail_count=CASE WHEN CAST(:rate AS NUMERIC) < 50 THEN fail_count+1 ELSE fail_count END
                 WHERE host || ':' || port::text = split_part(:uri, '@', 2)
                    OR host || ':' || port::text = :uri
                 """,

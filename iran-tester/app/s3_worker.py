@@ -101,12 +101,15 @@ class S3Worker:
                 )
                 result["job_id"] = job_id
                 result_envelope = self._cipher.encrypt(result)
+                # NOTE: ArvanCloud's S3-compatible storage rejects the
+                # ServerSideEncryption parameter with HTTP 400 InvalidArgument.
+                # The payload is already end-to-end encrypted via PayloadCipher
+                # before it reaches this transport, so SSE-S3 is not required.
                 await client.put_object(
                     Bucket=self._bucket,
                     Key=f"results/{job_id}.enc",
                     Body=result_envelope.encode(),
                     ContentType="application/octet-stream",
-                    ServerSideEncryption="AES256",
                 )
         finally:
             await client.delete_object(Bucket=self._bucket, Key=key)

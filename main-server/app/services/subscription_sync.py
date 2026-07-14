@@ -163,12 +163,15 @@ class SubscriptionSyncService:
     async def _push_s3(self, token: str, envelope: str) -> None:
         assert self._s3 is not None
         key = f"subs/{token}.enc"
+        # NOTE: ArvanCloud's S3-compatible storage rejects the
+        # ServerSideEncryption parameter with HTTP 400 InvalidArgument. The
+        # payload is already end-to-end encrypted via PayloadCipher before it
+        # reaches this transport, so SSE-S3 is not required.
         async with self._s3._session.client("s3", **self._s3._client_options) as client:
             await client.put_object(
                 Bucket=self._s3._bucket,
                 Key=key,
                 Body=envelope.encode(),
                 ContentType="application/octet-stream",
-                ServerSideEncryption="AES256",
                 Metadata={"token": token, "synced-at": str(int(time.time()))},
             )
