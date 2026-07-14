@@ -64,14 +64,14 @@ class ResilientTesterClient:
         cipher: PayloadCipher,
         breaker: CircuitBreaker,
         fallback: FallbackStore | None = None,
-        timeout: float = 10,
+        timeout: float = 18,
     ) -> None:
         self._base_url = base_url.rstrip("/")
         self._hmac_key = hmac_key
         self._cipher = cipher
         self._breaker = breaker
         self._fallback = fallback
-        self._timeout = min(timeout, 10)
+        self._timeout = timeout
 
     async def test(self, payload: dict[str, Any]) -> dict[str, Any]:
         job_id = uuid.uuid4()
@@ -90,7 +90,9 @@ class ResilientTesterClient:
                 result = await self._fallback.submit_and_wait(job_id, envelope, self._timeout)
                 return self._cipher.decrypt(result)
         except TimeoutError as exc:
-            raise CommunicationUnavailable("tester operation exceeded 10 seconds") from exc
+            raise CommunicationUnavailable(
+                f"tester operation exceeded {self._timeout:.0f} seconds"
+            ) from exc
 
     async def probe(self) -> bool:
         try:
@@ -105,7 +107,7 @@ class ResilientTesterClient:
 
     async def _direct(self, envelope: str) -> str:
         headers = signed_headers(envelope, self._hmac_key)
-        async with httpx.AsyncClient(timeout=min(8, self._timeout)) as client:
+        async with httpx.AsyncClient(timeout=max(1.0, self._timeout - 1)) as client:
             response = await client.post(
                 f"{self._base_url}/v1/tests",
                 json={"envelope": envelope},

@@ -11,7 +11,7 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     internal_hmac_key: str = Field(min_length=32)
     payload_encryption_key: str
-    max_operation_seconds: float = Field(default=10, ge=1, le=10)
+    max_operation_seconds: float = Field(default=18, ge=1, le=30)
     xray_binary: str = "/usr/local/bin/xray"
     xray_test_url: str = "https://cp.cloudflare.com/generate_204"
     socks_proxies: str = ""

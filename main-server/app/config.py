@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     tester_base_url: HttpUrl
     internal_hmac_key: str = Field(min_length=32)
     payload_encryption_key: str
-    tester_timeout_seconds: float = Field(default=10, ge=1, le=10)
+    tester_timeout_seconds: float = Field(default=18, ge=1, le=30)
     breaker_failure_threshold: int = Field(default=3, ge=1, le=10)
     breaker_recovery_successes: int = Field(default=2, ge=1, le=10)
     breaker_reset_seconds: int = Field(default=45, ge=30, le=300)
