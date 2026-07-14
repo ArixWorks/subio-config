@@ -65,11 +65,19 @@ info "Rebuilding and restarting Iran tester..."
 docker compose build
 docker compose up -d --remove-orphans
 
-sleep 4
-if curl -fsS http://127.0.0.1:8080/health/live >/dev/null; then
-  ok "Iran tester is healthy"
-else
-  warn "Health check failed — run: docker compose logs --tail=80 tester"
+info "Waiting for Iran tester readiness..."
+HEALTHY=0
+for attempt in {1..30}; do
+  if curl -fsS --max-time 3 http://127.0.0.1:8080/health/ready >/dev/null 2>&1; then
+    HEALTHY=1
+    break
+  fi
+  sleep 2
+done
+if [[ $HEALTHY -ne 1 ]]; then
+  docker compose logs --tail=80 tester || true
+  fail "Iran tester readiness check failed"
 fi
+ok "Iran tester is ready"
 docker compose ps
 ok "Update complete"

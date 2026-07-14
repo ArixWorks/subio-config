@@ -237,8 +237,8 @@ else
   warn "Skipping image build (--skip-build)"
 fi
 
-info "Starting services..."
-docker compose "${COMPOSE_PROFILES[@]}" up -d --remove-orphans
+info "Starting database dependencies..."
+docker compose up -d postgres redis
 
 # ---------------------------------------------------------------------------
 # 5) Wait for healthy Postgres + apply migrations on existing volumes
@@ -258,21 +258,27 @@ apply_sql() {
   local file="$1"
   [[ -f "$file" ]] || return 0
   info "  -> $(basename "$file")"
-  if ! docker compose exec -T postgres \
-    psql -v ON_ERROR_STOP=0 -U "${POSTGRES_USER:-subio}" -d "${POSTGRES_DB:-subio}" < "$file"; then
-    warn "Migration completed with warnings: $(basename "$file")"
-  fi
+  docker compose exec -T postgres \
+    psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-subio}" -d "${POSTGRES_DB:-subio}" < "$file"
 }
 
 apply_sql migrations/002_v21_extensions.sql
 apply_sql migrations/003_scanner_settings.sql
 apply_sql migrations/004_nullable_report_config.sql
+apply_sql migrations/005_premium_bot.sql
 ok "Migrations applied"
+
+info "Starting application services..."
+docker compose "${COMPOSE_PROFILES[@]}" up -d --remove-orphans
 
 # ---------------------------------------------------------------------------
 # 6) systemd unit + management CLI
 # ---------------------------------------------------------------------------
 info "Installing systemd unit: subio-main.service"
+PROFILE_ARGS=""
+if [[ $WITH_MONITOR -eq 1 ]]; then
+  PROFILE_ARGS="--profile monitoring"
+fi
 cat > /etc/systemd/system/subio-main.service <<EOF
 [Unit]
 Description=SubIO Main Stack (Docker Compose)
@@ -284,7 +290,7 @@ Wants=network-online.target
 Type=oneshot
 RemainAfterExit=yes
 WorkingDirectory=${SCRIPT_DIR}
-ExecStart=/usr/bin/docker compose ${WITH_MONITOR:+--profile monitoring} up -d --remove-orphans
+ExecStart=/usr/bin/docker compose ${PROFILE_ARGS} up -d --remove-orphans
 ExecStop=/usr/bin/docker compose stop
 TimeoutStartSec=0
 
@@ -300,13 +306,13 @@ cat > /usr/local/bin/subio-main <<EOF
 set -euo pipefail
 cd "${SCRIPT_DIR}"
 case "\${1:-}" in
-  up)      docker compose ${WITH_MONITOR:+--profile monitoring} up -d ;;
+  up)      docker compose ${PROFILE_ARGS} up -d ;;
   down)    docker compose down ;;
   restart) docker compose restart \${2:-} ;;
   logs)    shift; docker compose logs -f --tail=200 "\$@" ;;
   ps)      docker compose ps ;;
-  pull)    docker compose pull; docker compose build --pull; docker compose ${WITH_MONITOR:+--profile monitoring} up -d ;;
-  migrate) docker compose exec -T postgres psql -U ${POSTGRES_USER:-subio} -d ${POSTGRES_DB:-subio} < migrations/004_nullable_report_config.sql ;;
+  pull)    docker compose pull; docker compose build --pull; docker compose ${PROFILE_ARGS} up -d ;;
+  migrate) for f in migrations/002_v21_extensions.sql migrations/003_scanner_settings.sql migrations/004_nullable_report_config.sql migrations/005_premium_bot.sql; do docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U ${POSTGRES_USER:-subio} -d ${POSTGRES_DB:-subio} < "\$f"; done ;;
   *) echo "Usage: subio-main {up|down|restart|logs|ps|pull|migrate}"; exit 1 ;;
 esac
 EOF
@@ -356,7 +362,7 @@ info "Running API health check..."
 sleep 5
 API_OK=0
 for i in $(seq 1 30); do
-  if curl -fsS http://127.0.0.1:8000/health/live >/dev/null 2>&1; then
+  if curl -fsS http://127.0.0.1:8000/health/ready >/dev/null 2>&1; then
     API_OK=1
     break
   fi
@@ -368,7 +374,8 @@ if [[ $API_OK -eq 1 ]]; then
   ok "API is live: http://127.0.0.1:8000"
   ok "Admin panel: http://127.0.0.1:8000/admin"
 else
-  warn "Health check failed — inspect logs: docker compose logs --tail=100 api"
+  docker compose logs --tail=100 api || true
+  fail "Health check failed after 60 seconds"
 fi
 
 docker compose ps

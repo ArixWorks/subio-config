@@ -58,10 +58,10 @@ async def startup(ctx: dict[str, Any]) -> None:
     ctx["comm"] = CommunicationManager(db, tester)
     ctx["redis"] = Redis.from_url(settings.redis_url, decode_responses=True)
     ctx["scanner_settings"] = ScannerSettingsService(db, ctx["redis"])
-    ctx["channels"] = ForcedChannelService(db, ctx["redis"])
     ctx["config_tester"] = ConfigTesterService(db, tester, cipher, ctx["scanner_settings"])
     ctx["distribution"] = DistributionService(db)
     ctx["panels"] = PanelService(db, cipher)
+    ctx["channels"] = ForcedChannelService(db, ctx["redis"], ctx["panels"])
     ctx["subscriptions"] = SubscriptionService(db, ctx["panels"])
     ctx["socks"] = SocksService(
         db,
@@ -142,6 +142,18 @@ async def reset_daily_volumes(ctx: dict[str, Any]) -> None:
     await ctx["subscriptions"].reset_daily_volumes()
 
 
+async def sync_panel_usage(ctx: dict[str, Any]) -> dict[str, int]:
+    return await ctx["panels"].sync_usage()
+
+
+async def revoke_inactive_panel_clients(ctx: dict[str, Any]) -> dict[str, int]:
+    return await ctx["panels"].revoke_inactive_clients()
+
+
+async def cleanup_orphaned_panel_clients(ctx: dict[str, Any]) -> dict[str, int]:
+    return await ctx["panels"].process_cleanup_jobs()
+
+
 async def process_broadcasts(ctx: dict[str, Any]) -> None:
     await ctx["broadcasts"].process_pending(limit=1)
 
@@ -153,7 +165,9 @@ async def run_broadcast(ctx: dict[str, Any], broadcast_id: str) -> dict[str, Any
 async def enforce_forced_channels(ctx: dict[str, Any]) -> None:
     bot = Bot(ctx["settings"].bot_token)
     try:
-        await ctx["channels"].enforce_active_subscribers(bot)
+        deactivated = await ctx["channels"].enforce_active_subscribers(bot)
+        if deactivated:
+            await ctx["sub_sync"].sync_all(limit=300)
     finally:
         await bot.session.close()
 
@@ -265,6 +279,8 @@ class WorkerSettings:
         refresh_distribution,
         socks_health,
         reset_daily_volumes,
+        sync_panel_usage,
+        revoke_inactive_panel_clients,
         process_broadcasts,
         run_broadcast,
         enforce_forced_channels,
@@ -276,7 +292,7 @@ class WorkerSettings:
     on_startup = startup
     on_shutdown = shutdown
     cron_jobs = [
-        cron(cleanup, minute={0, 15, 30, 45}),
+        cron(cleanup, minute=set(range(0, 60))),
         cron(comm_probe, minute=set(range(0, 60, 1))),
         cron(test_public_configs, minute={2, 7, 12, 17, 22, 27, 32, 37, 42, 47, 52, 57}),
         # Healthy retest every 10s (round-robin batch) — cheap mode on Iran.
@@ -286,7 +302,10 @@ class WorkerSettings:
         cron(cleanup_configs, hour={3}, minute=0),
         cron(refresh_distribution, minute={5, 20, 35, 50}),
         cron(socks_health, minute={10, 40}),
-        cron(reset_daily_volumes, hour=0, minute=5),
+        cron(reset_daily_volumes, minute={2, 17, 32, 47}),
+        cron(sync_panel_usage, minute=set(range(0, 60, 5)), second=20),
+        cron(revoke_inactive_panel_clients, minute=set(range(0, 60)), second=35),
+        cron(cleanup_orphaned_panel_clients, minute=set(range(0, 60)), second=50),
         cron(process_broadcasts, minute=set(range(0, 60, 2))),
         cron(enforce_forced_channels, minute={0, 30}),
         cron(sync_subscriptions_to_iran, minute={1, 6, 11, 16, 21, 26, 31, 36, 41, 46, 51, 56}),

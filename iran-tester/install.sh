@@ -257,8 +257,8 @@ fi
 # ---------------------------------------------------------------------------
 if [[ -n "$WITH_CADDY" ]]; then
   IFS=',' read -r TESTER_DOMAIN SUB_DOMAIN <<<"$WITH_CADDY"
-  SUB_DOMAIN="${SUB_DOMAIN:-$TESTER_DOMAIN}"
-  info "Installing Caddy: tester=${TESTER_DOMAIN} sub=${SUB_DOMAIN}"
+  [[ "$SUB_DOMAIN" == "$TESTER_DOMAIN" ]] && SUB_DOMAIN=""
+  info "Installing Caddy: tester=${TESTER_DOMAIN}${SUB_DOMAIN:+ sub=${SUB_DOMAIN}}"
   if ! command -v caddy >/dev/null; then
     apt-get install -y debian-keyring debian-archive-keyring apt-transport-https
     curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
@@ -271,25 +271,27 @@ ${TESTER_DOMAIN} {
   encode gzip
   reverse_proxy 127.0.0.1:8080
 }
-
+EOF
+  if [[ -n "$SUB_DOMAIN" && "$SUB_DOMAIN" != "$TESTER_DOMAIN" ]]; then
+    cat >> /etc/caddy/Caddyfile <<EOF
 ${SUB_DOMAIN} {
   encode gzip
   reverse_proxy 127.0.0.1:8080
 }
 EOF
+  fi
   systemctl enable --now caddy
   systemctl reload caddy || systemctl restart caddy
-  ok "Caddy ready — https://${TESTER_DOMAIN} and https://${SUB_DOMAIN}"
+  ok "Caddy ready — https://${TESTER_DOMAIN}${SUB_DOMAIN:+ and https://${SUB_DOMAIN}}"
 fi
 
 # ---------------------------------------------------------------------------
 # 8) Health check
 # ---------------------------------------------------------------------------
-info "Running health check..."
-sleep 5
+info "Running readiness check..."
 HEALTH_OK=0
 for i in $(seq 1 30); do
-  if curl -fsS http://127.0.0.1:8080/health/live >/dev/null 2>&1; then
+  if curl -fsS http://127.0.0.1:8080/health/ready >/dev/null 2>&1; then
     HEALTH_OK=1
     break
   fi
@@ -298,14 +300,10 @@ done
 
 echo
 if [[ $HEALTH_OK -eq 1 ]]; then
-  ok "Tester is live: http://127.0.0.1:8080"
-  if curl -fsS http://127.0.0.1:8080/health/ready >/dev/null 2>&1; then
-    ok "Readiness check passed"
-  else
-    warn "Readiness check incomplete (xray may still be initializing)"
-  fi
+  ok "Tester is ready: http://127.0.0.1:8080"
 else
-  warn "Health check failed — inspect logs: docker compose logs tester"
+  docker compose logs --tail=80 tester || true
+  fail "Tester readiness check failed"
 fi
 docker compose ps
 

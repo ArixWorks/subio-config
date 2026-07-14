@@ -58,26 +58,49 @@ if grep -qE '^TELETHON_SESSION=.+' .env && ! grep -qE '^TELETHON_SESSION=\s*$' .
 fi
 
 docker compose "${MONITOR_ARGS[@]}" build
-docker compose "${MONITOR_ARGS[@]}" up -d --remove-orphans
+set -a
+# shellcheck disable=SC1091
+source <(grep -E '^(POSTGRES_USER|POSTGRES_DB)=' .env | sed 's/\r$//')
+set +a
+
+info "Starting database dependencies..."
+docker compose up -d postgres redis
+for attempt in {1..30}; do
+  if docker compose exec -T postgres \
+    pg_isready -U "${POSTGRES_USER:-subio}" -d "${POSTGRES_DB:-subio}" >/dev/null 2>&1; then
+    break
+  fi
+  [[ $attempt -eq 30 ]] && fail "Postgres did not become ready"
+  sleep 2
+done
 
 if [[ -d migrations ]]; then
   info "Applying migrations..."
-  set -a
-  # shellcheck disable=SC1091
-  source <(grep -E '^(POSTGRES_USER|POSTGRES_DB)=' .env | sed 's/\r$//')
-  set +a
-  for f in migrations/002_v21_extensions.sql migrations/003_scanner_settings.sql migrations/004_nullable_report_config.sql; do
+  for f in migrations/002_v21_extensions.sql migrations/003_scanner_settings.sql migrations/004_nullable_report_config.sql migrations/005_premium_bot.sql; do
     [[ -f "$f" ]] || continue
     docker compose exec -T postgres \
-      psql -v ON_ERROR_STOP=0 -U "${POSTGRES_USER:-subio}" -d "${POSTGRES_DB:-subio}" < "$f" >/dev/null || true
+      psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-subio}" -d "${POSTGRES_DB:-subio}" < "$f" >/dev/null
   done
 fi
 
-sleep 4
-if curl -fsS http://127.0.0.1:8000/health/live >/dev/null; then
-  ok "Main API is healthy"
+info "Starting application services..."
+docker compose "${MONITOR_ARGS[@]}" up -d --remove-orphans
+
+info "Waiting for Main API health..."
+API_HEALTHY=0
+for attempt in {1..15}; do
+  if curl -fsS --max-time 3 http://127.0.0.1:8000/health/ready >/dev/null 2>&1; then
+    API_HEALTHY=1
+    break
+  fi
+  sleep 2
+done
+if [[ $API_HEALTHY -eq 1 ]]; then
+  ok "Main API is ready"
 else
-  warn "API health check failed — run: docker compose logs --tail=80 api"
+  warn "API did not become ready within 30 seconds"
+  docker compose logs --tail=80 api || true
+  fail "Update failed because Main API is not ready"
 fi
 docker compose ps
 ok "Update complete"

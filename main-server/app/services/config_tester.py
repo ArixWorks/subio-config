@@ -379,7 +379,7 @@ class ConfigTesterService:
         )
 
     async def cleanup_dead_configs(self) -> int:
-        async with self._db.engine.connect() as conn:
+        async with self._db.connection() as conn:
             from sqlalchemy import text
 
             result = await conn.execute(

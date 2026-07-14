@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import UTC, datetime
 from pathlib import Path
 
 logger = logging.getLogger("subio.sub_store")
@@ -38,10 +39,27 @@ class SubscriptionStore:
         if not path.exists():
             return None
         data = json.loads(path.read_text(encoding="utf-8"))
+        expires_at = data.get("expires_at")
+        if expires_at:
+            try:
+                expiry = datetime.fromisoformat(str(expires_at).replace("Z", "+00:00"))
+                if expiry.tzinfo is None:
+                    expiry = expiry.replace(tzinfo=UTC)
+                if expiry <= datetime.now(tz=UTC):
+                    self.delete(token)
+                    return None
+            except ValueError:
+                logger.warning("invalid_subscription_expiry", extra={"token": token})
+                self.delete(token)
+                return None
         configs = data.get("configs") or []
         if not isinstance(configs, list):
             return None
-        return "\n".join(str(item).strip() for item in configs if str(item).strip())
+        body = "\n".join(str(item).strip() for item in configs if str(item).strip())
+        if not body:
+            self.delete(token)
+            return None
+        return body
 
     def delete(self, token: str) -> None:
         path = self._path(token)

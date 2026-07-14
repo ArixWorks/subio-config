@@ -40,24 +40,59 @@ class SubscriptionSyncService:
         for feed in feeds:
             try:
                 await self._push(feed)
+                await self._db.execute(
+                    "UPDATE public_feeds SET updated_at=now() WHERE token=:token",
+                    {"token": feed["token"]},
+                )
                 pushed += 1
             except Exception:
                 logger.exception("sub_sync_failed", extra={"token": feed["token"]})
                 failed += 1
         return {"pushed": pushed, "failed": failed, "total": len(feeds)}
 
+    async def sync_token(self, token: str) -> None:
+        row = await self._db.fetch_one(
+            "SELECT token::text AS token, is_active FROM public_feeds WHERE token=:token",
+            {"token": token},
+        )
+        if row is None:
+            raise RuntimeError("public feed not found")
+        configs: list[str] = []
+        if bool(row["is_active"]):
+            uri_rows = await self._db.fetch_all(
+                """
+                SELECT uri_enc FROM vpn_configs
+                WHERE is_enabled AND score >= 50 AND scope='public'
+                  AND (expires_at IS NULL OR expires_at > now())
+                ORDER BY score DESC LIMIT 10
+                """
+            )
+            for uri_row in uri_rows:
+                try:
+                    configs.append(
+                        self._cipher.decrypt(
+                            str(uri_row["uri_enc"]), aad=b"subio:config:v1"
+                        )["uri"]
+                    )
+                except Exception:
+                    continue
+        feed = {"token": token, "configs": configs, "expires_at": None}
+        await self._push(feed)
+        await self._db.execute(
+            "UPDATE public_feeds SET updated_at=now() WHERE token=:token",
+            {"token": token},
+        )
+
     async def _build_feeds(self, *, limit: int) -> list[dict[str, Any]]:
         feeds: list[dict[str, Any]] = []
         async with self._db.engine.connect() as conn:
-            subs = (
+            public_feeds = (
                 await conn.execute(
                     text(
                         """
-                        SELECT s.id, s.token::text AS token, s.expires_at
-                        FROM subscriptions s
-                        WHERE s.is_active AND s.expires_at > now()
-                          AND s.volume_used_bytes < s.volume_limit_bytes
-                        ORDER BY s.created_at DESC
+                        SELECT token::text AS token, is_active
+                        FROM public_feeds
+                        ORDER BY updated_at ASC
                         LIMIT :limit
                         """
                     ),
@@ -65,21 +100,22 @@ class SubscriptionSyncService:
                 )
             ).mappings().all()
 
-            for sub in subs:
-                rows = (
-                    await conn.execute(
-                        text(
-                            """
-                            SELECT uri_enc FROM vpn_configs
-                            WHERE is_enabled AND score >= 50
-                              AND (scope='public' OR subscription_id=:subscription_id)
-                              AND (expires_at IS NULL OR expires_at > now())
-                            ORDER BY score DESC LIMIT 10
-                            """
-                        ),
-                        {"subscription_id": sub["id"]},
-                    )
-                ).mappings().all()
+            for feed in public_feeds:
+                rows = []
+                if bool(feed["is_active"]):
+                    rows = (
+                        await conn.execute(
+                            text(
+                                """
+                                SELECT uri_enc FROM vpn_configs
+                                WHERE is_enabled AND score >= 50
+                                  AND scope='public'
+                                  AND (expires_at IS NULL OR expires_at > now())
+                                ORDER BY score DESC LIMIT 10
+                                """
+                            )
+                        )
+                    ).mappings().all()
                 configs: list[str] = []
                 for row in rows:
                     try:
@@ -90,9 +126,9 @@ class SubscriptionSyncService:
                         continue
                 feeds.append(
                     {
-                        "token": str(sub["token"]),
+                        "token": str(feed["token"]),
                         "configs": configs,
-                        "expires_at": sub["expires_at"].isoformat() if sub["expires_at"] else None,
+                        "expires_at": None,
                     }
                 )
         return feeds

@@ -6,6 +6,7 @@ from collections.abc import Awaitable, Callable
 from typing import Any
 
 from aiogram import BaseMiddleware, Bot
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.types import CallbackQuery, Message, TelegramObject
 
 from app.config import Settings
@@ -28,8 +29,10 @@ class ForcedChannelMiddleware(BaseMiddleware):
         if isinstance(event, CallbackQuery) and event.data == VERIFY_CALLBACK:
             return await handler(event, data)
 
-        if isinstance(event, Message) and event.text and event.text.startswith("/start"):
-            return await handler(event, data)
+        if isinstance(event, Message) and event.text:
+            command = event.text.split(maxsplit=1)[0].split("@", 1)[0]
+            if command in {"/start", "/cancel"}:
+                return await handler(event, data)
 
         ok, missing = await self._service.check_membership(bot, user.id)
         if ok:
@@ -42,8 +45,11 @@ class ForcedChannelMiddleware(BaseMiddleware):
         )
         if isinstance(event, CallbackQuery):
             await event.answer("ابتدا در کانال‌ها عضو شوید.", show_alert=True)
-            if event.message:
-                await event.message.answer(text, reply_markup=keyboard)
+            if isinstance(event.message, Message):
+                try:
+                    await event.message.edit_text(text, reply_markup=keyboard)
+                except TelegramBadRequest:
+                    await event.message.answer(text, reply_markup=keyboard)
             return None
         if isinstance(event, Message):
             await event.answer(text, reply_markup=keyboard)

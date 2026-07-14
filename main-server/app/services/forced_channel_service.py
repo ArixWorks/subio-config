@@ -10,6 +10,7 @@ from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from redis.asyncio import Redis
 
 from app.db import Database
+from app.services.panel_service import PanelService
 
 logger = logging.getLogger("subio.channels")
 CACHE_TTL = 300
@@ -17,12 +18,15 @@ VERIFY_CALLBACK = "channels:verify"
 
 
 class ForcedChannelService:
-    def __init__(self, db: Database, cache: Redis) -> None:
+    def __init__(
+        self, db: Database, cache: Redis, panels: PanelService | None = None
+    ) -> None:
         self._db = db
         self._cache = cache
+        self._panels = panels
 
     async def list_active(self) -> list[dict[str, Any]]:
-        async with self._db.engine.connect() as conn:
+        async with self._db.connection() as conn:
             from sqlalchemy import text
 
             rows = (
@@ -84,7 +88,7 @@ class ForcedChannelService:
         return InlineKeyboardMarkup(inline_keyboard=rows)
 
     async def deactivate_subscriptions(self, user_id: int) -> int:
-        async with self._db.engine.connect() as conn:
+        async with self._db.connection() as conn:
             from sqlalchemy import text
 
             result = await conn.execute(
@@ -98,15 +102,24 @@ class ForcedChannelService:
                 {"user_id": user_id},
             )
             sub_ids = [str(row[0]) for row in result.fetchall()]
-            for sub_id in sub_ids:
-                await conn.execute(
-                    text("UPDATE panel_clients SET is_active=FALSE WHERE subscription_id=:sub_id"),
-                    {"sub_id": sub_id},
-                )
+            public_result = await conn.execute(
+                text(
+                    """
+                    UPDATE public_feeds
+                    SET is_active=FALSE, updated_at=TIMESTAMPTZ '1970-01-01 00:00:00+00'
+                    WHERE user_id=:user_id AND is_active
+                    RETURNING user_id
+                    """
+                ),
+                {"user_id": user_id},
+            )
+            public_deactivated = len(public_result.fetchall())
         await self._cache.delete(f"channel:ok:{user_id}")
+        if self._panels is not None and sub_ids:
+            await self._panels.revoke_inactive_clients(user_id)
         if sub_ids:
             logger.info("subscriptions_deactivated", extra={"user_id": user_id, "count": len(sub_ids)})
-        return len(sub_ids)
+        return len(sub_ids) + public_deactivated
 
     async def enforce_active_subscribers(self, bot: Bot) -> int:
         async with self._db.engine.connect() as conn:
@@ -116,9 +129,10 @@ class ForcedChannelService:
                 await conn.execute(
                     text(
                         """
-                        SELECT DISTINCT s.user_id
-                        FROM subscriptions s
-                        WHERE s.is_active AND s.expires_at > now()
+                        SELECT user_id FROM subscriptions
+                        WHERE is_active AND expires_at > now()
+                        UNION
+                        SELECT user_id FROM public_feeds WHERE is_active
                         """
                     )
                 )

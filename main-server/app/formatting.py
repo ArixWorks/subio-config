@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Any
+from zoneinfo import ZoneInfo
+
+TEHRAN = ZoneInfo("Asia/Tehran")
 
 
 def format_bytes(num: int | float | None) -> str:
@@ -44,8 +47,10 @@ def format_expiry(value: Any, language: str = "fa") -> str:
             dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
         except ValueError:
             return text[:19]
-    # Show UTC date-time without microseconds
-    stamp = dt.strftime("%Y-%m-%d %H:%M UTC")
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    local = dt.astimezone(TEHRAN)
+    stamp = local.strftime("%Y-%m-%d %H:%M")
     if language.startswith("fa"):
-        return stamp
-    return stamp
+        return f"{stamp} به وقت تهران"
+    return f"{stamp} Asia/Tehran"

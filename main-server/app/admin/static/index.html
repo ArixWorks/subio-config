@@ -41,13 +41,22 @@
     <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
       <h2 class="font-semibold text-lg">پنل‌های 3x-ui (اشتراک خصوصی)</h2>
       <p class="text-slate-400 text-sm">بدون حداقل یک پنل فعال، ساخت اشتراک ممکن است خطا بدهد.</p>
+      <input id="panel-id" type="hidden" />
       <div class="grid md:grid-cols-4 gap-2">
         <input id="panel-name" placeholder="نام (مثلاً DE-1)" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
         <input id="panel-url" placeholder="https://panel.example.com:2053" class="bg-slate-950 border border-slate-700 rounded px-2 py-1 md:col-span-2" />
         <input id="panel-user" placeholder="username" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
         <input id="panel-pass" type="password" placeholder="password" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
+        <input id="panel-country-code" placeholder="کد کشور، مثال DE" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
+        <input id="panel-country-name" placeholder="نام فارسی، مثال آلمان" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
+        <input id="panel-flag-key" placeholder="کلید پرچم، مثال flag_de" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
+        <input id="panel-sort" type="number" value="100" placeholder="ترتیب" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
+        <label class="flex items-center gap-2"><input id="panel-active" type="checkbox" checked /> پنل فعال باشد</label>
       </div>
-      <button onclick="addPanel()" class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-lg">افزودن پنل</button>
+      <div class="flex gap-2">
+        <button id="panel-save" onclick="savePanel()" class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-lg">افزودن پنل</button>
+        <button onclick="clearPanelForm()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg">انصراف</button>
+      </div>
       <ul id="panel-list" class="text-sm space-y-2"></ul>
     </section>
 
@@ -79,15 +88,18 @@
     <section class="grid md:grid-cols-1 gap-4">
       <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
         <h2 class="font-semibold mb-3">UI Emojis / Colors</h2>
+        <p class="text-slate-400 text-sm mb-3">برای Custom Emoji، شناسه عددی و یک fallback عادی وارد کنید. با /emojiid در بات می‌توانید ID را استخراج کنید.</p>
         <div class="grid grid-cols-2 gap-2 mb-3">
           <input id="emoji-key" placeholder="emoji_public" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
           <input id="emoji-value" placeholder="value / custom_emoji_id" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
+          <input id="emoji-fallback" placeholder="fallback، مثال 📡" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
           <select id="emoji-type" class="bg-slate-950 border border-slate-700 rounded px-2 py-1">
             <option value="emoji">emoji</option>
             <option value="custom_emoji">custom_emoji</option>
             <option value="color">color</option>
           </select>
           <button onclick="saveEmoji()" class="bg-blue-600 px-3 py-1 rounded">ذخیره</button>
+          <button onclick="previewEmoji()" class="bg-emerald-600 px-3 py-1 rounded">ارسال پیش‌نمایش به تلگرام</button>
         </div>
         <ul id="emoji-list" class="text-sm space-y-1 max-h-64 overflow-auto"></ul>
       </div>
@@ -149,6 +161,11 @@
         ? 'text-sm px-3 py-2 rounded-lg bg-emerald-900/60 border border-emerald-700 text-emerald-200'
         : 'text-sm px-3 py-2 rounded-lg bg-red-900/60 border border-red-700 text-red-200';
     }
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, char => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;'
+      })[char]);
+    }
     function getToken() {
       return (document.getElementById('token').value || localStorage.getItem(TOKEN_KEY) || '').trim();
     }
@@ -195,8 +212,15 @@
       const comm = await api('/admin/communication');
       document.getElementById('comm-log').textContent = JSON.stringify(comm.recent_switches, null, 2);
       const panels = await api('/admin/panels');
+      window.__panelsById = Object.fromEntries(panels.map(panel => [panel.id, panel]));
       document.getElementById('panel-list').innerHTML = panels.length
-        ? panels.map(p => `<li class="bg-slate-950 border border-slate-800 rounded px-3 py-2"><strong>${p.name}</strong> — ${p.base_url} • ${p.is_active ? 'فعال' : 'غیرفعال'}</li>`).join('')
+        ? panels.map(p => `<li class="flex flex-wrap items-center gap-2 bg-slate-950 border border-slate-800 rounded px-3 py-2">
+            <span class="flex-1"><strong>${escapeHtml(p.name)}</strong> — ${escapeHtml(p.country_name_fa || 'بدون نام')}
+              (${escapeHtml(p.country_code || 'UN')}) • ${escapeHtml(p.base_url)} • ${p.is_active ? 'فعال' : 'غیرفعال'}</span>
+            <button onclick="editPanel('${p.id}')" class="bg-slate-700 px-2 py-1 rounded text-xs">ویرایش</button>
+            <button onclick="togglePanel('${p.id}')" class="bg-amber-700 px-2 py-1 rounded text-xs">${p.is_active ? 'غیرفعال' : 'فعال'}</button>
+            <button onclick="deletePanel('${p.id}')" class="bg-red-700 px-2 py-1 rounded text-xs">حذف امن</button>
+          </li>`).join('')
         : '<li class="text-amber-400">هنوز پنلی ثبت نشده</li>';
       const socks = await api('/admin/socks');
       window.__socksById = Object.fromEntries(socks.map(s => [s.id, s]));
@@ -211,7 +235,10 @@
           <button onclick="deleteSocks(${s.id})" class="bg-red-700 px-2 py-1 rounded text-xs">حذف</button>
         </li>`).join('');
       const emojis = await api('/admin/ui-assets');
-      document.getElementById('emoji-list').innerHTML = emojis.map(e => `<li><code>${e.key}</code> = ${e.value} (${e.type})</li>`).join('');
+      window.__uiAssets = Object.fromEntries(emojis.map(e => [e.key, e]));
+      document.getElementById('emoji-list').innerHTML = emojis.map(e =>
+        `<li class="flex items-center gap-2"><button class="text-blue-300 underline" onclick="editEmoji('${e.key}')"><code>${e.key}</code></button> = ${e.fallback_value || e.value} (${e.type})</li>`
+      ).join('');
       const msg = await api('/admin/messages/tester_timeout');
       document.getElementById('timeout-msg').value = msg.value || '';
       const scan = await api('/admin/scanner-settings');
@@ -224,15 +251,69 @@
       document.getElementById('proto-wireguard').checked = scan.protocols.wireguard;
       toast('داده‌ها بارگذاری شد');
     }
-    async function addPanel() {
-      await api('/admin/panels', { method: 'POST', body: JSON.stringify({
+    function panelPayload() {
+      const payload = {
         name: document.getElementById('panel-name').value,
         base_url: document.getElementById('panel-url').value,
-        username: document.getElementById('panel-user').value,
-        password: document.getElementById('panel-pass').value,
-      })});
+        country_code: document.getElementById('panel-country-code').value,
+        country_name_fa: document.getElementById('panel-country-name').value,
+        flag_emoji_key: document.getElementById('panel-flag-key').value || 'location',
+        sort_order: Number(document.getElementById('panel-sort').value || 100),
+        is_active: document.getElementById('panel-active').checked,
+      };
+      const username = document.getElementById('panel-user').value;
+      const password = document.getElementById('panel-pass').value;
+      if (username || password || !document.getElementById('panel-id').value) {
+        payload.username = username;
+        payload.password = password;
+      }
+      return payload;
+    }
+    function clearPanelForm() {
+      ['panel-id','panel-name','panel-url','panel-user','panel-pass','panel-country-code','panel-country-name','panel-flag-key']
+        .forEach(id => document.getElementById(id).value = '');
+      document.getElementById('panel-sort').value = '100';
+      document.getElementById('panel-active').checked = true;
+      document.getElementById('panel-save').textContent = 'افزودن پنل';
+    }
+    function editPanel(id) {
+      const panel = (window.__panelsById || {})[id];
+      if (!panel) return;
+      document.getElementById('panel-id').value = panel.id;
+      document.getElementById('panel-name').value = panel.name || '';
+      document.getElementById('panel-url').value = panel.base_url || '';
+      document.getElementById('panel-user').value = '';
+      document.getElementById('panel-pass').value = '';
+      document.getElementById('panel-country-code').value = panel.country_code || '';
+      document.getElementById('panel-country-name').value = panel.country_name_fa || '';
+      document.getElementById('panel-flag-key').value = panel.flag_emoji_key || 'location';
+      document.getElementById('panel-sort').value = panel.sort_order ?? 100;
+      document.getElementById('panel-active').checked = Boolean(panel.is_active);
+      document.getElementById('panel-save').textContent = 'ذخیره تغییرات';
+    }
+    async function savePanel() {
+      const id = document.getElementById('panel-id').value;
+      await api(id ? `/admin/panels/${encodeURIComponent(id)}` : '/admin/panels', {
+        method: id ? 'PUT' : 'POST',
+        body: JSON.stringify(panelPayload()),
+      });
       toast('پنل ذخیره شد');
-      ['panel-name','panel-url','panel-user','panel-pass'].forEach(id => document.getElementById(id).value = '');
+      clearPanelForm();
+      await refresh();
+    }
+    async function togglePanel(id) {
+      const panel = (window.__panelsById || {})[id];
+      if (!panel) return;
+      await api(`/admin/panels/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        body: JSON.stringify({ ...panel, is_active: !panel.is_active }),
+      });
+      await refresh();
+    }
+    async function deletePanel(id) {
+      if (!confirm('پنل فقط در صورت نداشتن کلاینت فعال حذف می‌شود. ادامه می‌دهید؟')) return;
+      await api(`/admin/panels/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      clearPanelForm();
       await refresh();
     }
     async function probe() { await api('/admin/communication/probe', { method: 'POST' }); await refresh(); }
@@ -290,11 +371,26 @@
       await api('/admin/ui-assets', { method: 'PUT', body: JSON.stringify({
         key: document.getElementById('emoji-key').value,
         value: document.getElementById('emoji-value').value,
+        fallback_value: document.getElementById('emoji-fallback').value || null,
         type: document.getElementById('emoji-type').value,
         language: 'fa',
       })});
       toast('Emoji ذخیره شد');
       await refresh();
+    }
+    function editEmoji(key) {
+      const e = (window.__uiAssets || {})[key];
+      if (!e) return;
+      document.getElementById('emoji-key').value = e.key;
+      document.getElementById('emoji-value').value = e.value;
+      document.getElementById('emoji-fallback').value = e.fallback_value || '';
+      document.getElementById('emoji-type').value = e.type;
+    }
+    async function previewEmoji() {
+      const key = document.getElementById('emoji-key').value;
+      if (!key) { toast('ابتدا کلید ایموجی را وارد کنید', false); return; }
+      await api(`/admin/ui-assets/${encodeURIComponent(key)}/preview`, { method: 'POST' });
+      toast('پیش‌نمایش به تلگرام ادمین ارسال شد');
     }
     async function saveTimeoutMsg() {
       await api('/admin/messages/tester_timeout', { method: 'PUT', body: JSON.stringify({ value: document.getElementById('timeout-msg').value }) });

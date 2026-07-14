@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Annotated, Any
 from uuid import UUID
 
+from aiogram import Bot
 from arq import create_pool
 from arq.connections import RedisSettings
 from fastapi import Depends, FastAPI, Header, HTTPException, Request, Response, status
@@ -55,6 +56,7 @@ class UIAsset(BaseModel):
     language: str = Field(default="fa", pattern=r"^[a-z]{2,5}$")
     value: str = Field(min_length=1, max_length=256)
     type: str = Field(default="emoji", pattern=r"^(emoji|custom_emoji|color|text)$")
+    fallback_value: str | None = Field(default=None, max_length=16)
     description: str | None = Field(default=None, max_length=500)
 
 
@@ -63,6 +65,22 @@ class PanelCreate(BaseModel):
     base_url: str
     username: str
     password: str
+    country_code: str = Field(min_length=2, max_length=8, pattern=r"^[A-Za-z0-9_-]+$")
+    country_name_fa: str = Field(min_length=2, max_length=64)
+    flag_emoji_key: str = Field(default="location", pattern=r"^[a-z][a-z0-9_]{2,63}$")
+    sort_order: int = Field(default=100, ge=0, le=10_000)
+
+
+class PanelUpdate(BaseModel):
+    name: str = Field(min_length=2, max_length=64)
+    base_url: str
+    username: str | None = Field(default=None, min_length=1)
+    password: str | None = Field(default=None, min_length=1)
+    country_code: str = Field(min_length=2, max_length=8, pattern=r"^[A-Za-z0-9_-]+$")
+    country_name_fa: str = Field(min_length=2, max_length=64)
+    flag_emoji_key: str = Field(default="location", pattern=r"^[a-z][a-z0-9_]{2,63}$")
+    sort_order: int = Field(default=100, ge=0, le=10_000)
+    is_active: bool = True
 
 
 class SocksCreate(BaseModel):
@@ -254,9 +272,8 @@ async def report(body: ReportRequest, request: Request) -> dict[str, str]:
 async def subscription(token: UUID, request: Request) -> Response:
     row = await request.app.state.db.fetch_one(
         """
-        SELECT s.id FROM subscriptions s
-        WHERE s.token=:token AND s.is_active AND s.expires_at > now()
-          AND s.volume_used_bytes < s.volume_limit_bytes
+        SELECT user_id FROM public_feeds
+        WHERE token=:token AND is_active
         """,
         {"token": token},
     )
@@ -271,12 +288,11 @@ async def subscription(token: UUID, request: Request) -> Response:
                 """
                 SELECT uri_enc FROM vpn_configs
                 WHERE is_enabled AND score >= 50
-                  AND (scope='public' OR subscription_id=:subscription_id)
+                  AND scope='public'
                   AND (expires_at IS NULL OR expires_at > now())
                 ORDER BY score DESC LIMIT 10
                 """
-            ),
-            {"subscription_id": row["id"]},
+            )
         )
         configs_rows = [dict(item) for item in result.mappings().all()]
     plaintext = [
@@ -338,7 +354,14 @@ async def list_assets(request: Request) -> list[dict[str, Any]]:
         from sqlalchemy import text
 
         rows = (
-            await conn.execute(text("SELECT key, language, value, type, description FROM ui_assets ORDER BY key"))
+            await conn.execute(
+                text(
+                    """
+                    SELECT key, language, value, type, fallback_value, description
+                    FROM ui_assets ORDER BY key
+                    """
+                )
+            )
         ).mappings().all()
     return [dict(row) for row in rows]
 
@@ -346,17 +369,45 @@ async def list_assets(request: Request) -> list[dict[str, Any]]:
 @app.put("/admin/ui-assets", dependencies=[Depends(require_admin)])
 async def upsert_asset(body: UIAsset, request: Request) -> dict[str, str]:
     await rate_limit(request, "admin", 60)
+    if body.type == "custom_emoji" and not body.value.isdigit():
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "custom emoji value must be a numeric Telegram ID",
+        )
     await request.app.state.db.execute(
         """
-        INSERT INTO ui_assets(key, language, value, type, description)
-        VALUES (:key,:language,:value,:type,:description)
+        INSERT INTO ui_assets(key, language, value, type, fallback_value, description)
+        VALUES (:key,:language,:value,:type,:fallback_value,:description)
         ON CONFLICT (key,language) DO UPDATE SET value=excluded.value,
-          type=excluded.type, description=excluded.description, updated_at=now()
+          type=excluded.type, fallback_value=excluded.fallback_value,
+          description=COALESCE(excluded.description, ui_assets.description), updated_at=now()
         """,
         body.model_dump(),
     )
     await request.app.state.emoji.invalidate(body.key, body.language)
     return {"status": "saved", "fingerprint": hashlib.sha256(body.value.encode()).hexdigest()[:12]}
+
+
+@app.post("/admin/ui-assets/{key}/preview", dependencies=[Depends(require_admin)])
+async def preview_asset(key: str, request: Request) -> dict[str, str]:
+    if not request.app.state.settings.admin_ids:
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "no admin Telegram ID configured",
+        )
+    text_value, entities = await request.app.state.emoji.render(
+        key, "پیش‌نمایش رابط کاربری SubIO", "fa", "✨"
+    )
+    bot = Bot(request.app.state.settings.bot_token)
+    try:
+        await bot.send_message(
+            next(iter(request.app.state.settings.admin_ids)),
+            text_value,
+            entities=entities,
+        )
+    finally:
+        await bot.session.close()
+    return {"status": "sent"}
 
 
 @app.get("/admin/socks", dependencies=[Depends(require_admin)])
@@ -435,28 +486,216 @@ async def list_panels(request: Request) -> list[dict[str, Any]]:
     async with request.app.state.db.engine.connect() as conn:
         from sqlalchemy import text
 
-        rows = (await conn.execute(text("SELECT id, name, base_url, is_active FROM panels ORDER BY name"))).mappings().all()
+        rows = (
+            await conn.execute(
+                text(
+                    """
+                    SELECT id, name, base_url, is_active, country_code, country_name_fa,
+                           flag_emoji_key, sort_order
+                    FROM panels ORDER BY sort_order, name
+                    """
+                )
+            )
+        ).mappings().all()
     return [dict(row) for row in rows]
 
 
 @app.post("/admin/panels", dependencies=[Depends(require_admin)])
 async def create_panel(body: PanelCreate, request: Request) -> dict[str, str]:
     cipher: PayloadCipher = request.app.state.cipher
-    await request.app.state.db.execute(
-        """
-        INSERT INTO panels(name, base_url, username_enc, password_enc)
-        VALUES (:name, :base_url, :username_enc, :password_enc)
-        ON CONFLICT (name) DO UPDATE SET base_url=excluded.base_url,
-          username_enc=excluded.username_enc, password_enc=excluded.password_enc, is_active=TRUE
-        """,
-        {
-            "name": body.name,
-            "base_url": body.base_url.rstrip("/"),
-            "username_enc": cipher.encrypt({"username": body.username}, aad=b"subio:panel:v1"),
-            "password_enc": cipher.encrypt({"password": body.password}, aad=b"subio:panel:v1"),
-        },
-    )
+    from sqlalchemy import text
+
+    async with request.app.state.db.connection() as conn:
+        created = (
+            await conn.execute(
+                text(
+                    """
+                    INSERT INTO panels(
+                      name, base_url, username_enc, password_enc, country_code,
+                      country_name_fa, flag_emoji_key, sort_order
+                    )
+                    VALUES (
+                      :name, :base_url, :username_enc, :password_enc, :country_code,
+                      :country_name_fa, :flag_emoji_key, :sort_order
+                    )
+                    ON CONFLICT (name) DO NOTHING
+                    RETURNING id
+                    """
+                ),
+                {
+                    "name": body.name,
+                    "base_url": body.base_url.rstrip("/"),
+                    "username_enc": cipher.encrypt(
+                        {"username": body.username}, aad=b"subio:panel:v1"
+                    ),
+                    "password_enc": cipher.encrypt(
+                        {"password": body.password}, aad=b"subio:panel:v1"
+                    ),
+                    "country_code": body.country_code.upper(),
+                    "country_name_fa": body.country_name_fa,
+                    "flag_emoji_key": body.flag_emoji_key,
+                    "sort_order": body.sort_order,
+                },
+            )
+        ).mappings().first()
+        if created is None:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "panel name already exists; edit the existing panel",
+            )
     return {"status": "saved"}
+
+
+@app.put("/admin/panels/{panel_id}", dependencies=[Depends(require_admin)])
+async def update_panel(
+    panel_id: UUID, body: PanelUpdate, request: Request
+) -> dict[str, str]:
+    if (body.username is None) != (body.password is None):
+        raise HTTPException(
+            status.HTTP_422_UNPROCESSABLE_ENTITY,
+            "username and password must be provided together",
+        )
+    credentials: dict[str, str | None] = {
+        "username_enc": None,
+        "password_enc": None,
+    }
+    if body.username is not None and body.password is not None:
+        cipher: PayloadCipher = request.app.state.cipher
+        credentials = {
+            "username_enc": cipher.encrypt(
+                {"username": body.username}, aad=b"subio:panel:v1"
+            ),
+            "password_enc": cipher.encrypt(
+                {"password": body.password}, aad=b"subio:panel:v1"
+            ),
+        }
+    from sqlalchemy import text
+
+    async with request.app.state.db.connection() as conn:
+        await conn.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtextextended(CAST(:panel_id AS text), 0))"
+            ),
+            {"panel_id": str(panel_id)},
+        )
+        conflict = (
+            await conn.execute(
+                text("SELECT id FROM panels WHERE name=:name AND id<>:id"),
+                {"name": body.name, "id": panel_id},
+            )
+        ).mappings().first()
+        if conflict:
+            raise HTTPException(status.HTTP_409_CONFLICT, "panel name already exists")
+        existing = (
+            await conn.execute(
+                text("SELECT id, base_url FROM panels WHERE id=:id"),
+                {"id": panel_id},
+            )
+        ).mappings().first()
+        if not existing:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "panel not found")
+        active_count = int(
+            (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT
+                          (SELECT count(*) FROM panel_clients
+                           WHERE panel_id=:id AND is_active)
+                          +
+                          (SELECT count(*) FROM panel_cleanup_jobs
+                           WHERE panel_id=:id) AS count
+                        """
+                    ),
+                    {"id": panel_id},
+                )
+            ).scalar_one()
+        )
+        credentials_changed = body.username is not None
+        endpoint_changed = body.base_url.rstrip("/") != str(
+            existing["base_url"]
+        ).rstrip("/")
+        if active_count > 0 and (credentials_changed or endpoint_changed):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "cannot change panel endpoint or credentials while active clients exist",
+            )
+        await conn.execute(
+            text(
+                """
+                UPDATE panels
+                SET name=:name, base_url=:base_url,
+                    username_enc=COALESCE(:username_enc, username_enc),
+                    password_enc=COALESCE(:password_enc, password_enc),
+                    country_code=:country_code, country_name_fa=:country_name_fa,
+                    flag_emoji_key=:flag_emoji_key, sort_order=:sort_order,
+                    is_active=:is_active
+                WHERE id=:id
+                """
+            ),
+            {
+                "id": panel_id,
+                "name": body.name,
+                "base_url": body.base_url.rstrip("/"),
+                "country_code": body.country_code.upper(),
+                "country_name_fa": body.country_name_fa,
+                "flag_emoji_key": body.flag_emoji_key,
+                "sort_order": body.sort_order,
+                "is_active": body.is_active,
+                **credentials,
+            },
+        )
+    return {"status": "updated"}
+
+
+@app.delete("/admin/panels/{panel_id}", dependencies=[Depends(require_admin)])
+async def delete_panel(panel_id: UUID, request: Request) -> dict[str, str]:
+    from sqlalchemy import text
+
+    async with request.app.state.db.connection() as conn:
+        await conn.execute(
+            text(
+                "SELECT pg_advisory_xact_lock("
+                "hashtextextended(CAST(:panel_id AS text), 0))"
+            ),
+            {"panel_id": str(panel_id)},
+        )
+        panel = (
+            await conn.execute(
+                text("SELECT id FROM panels WHERE id=:id"),
+                {"id": panel_id},
+            )
+        ).mappings().first()
+        if not panel:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "panel not found")
+        active_count = int(
+            (
+                await conn.execute(
+                    text(
+                        """
+                        SELECT
+                          (SELECT count(*) FROM panel_clients
+                           WHERE panel_id=:id AND is_active)
+                          +
+                          (SELECT count(*) FROM panel_cleanup_jobs
+                           WHERE panel_id=:id) AS count
+                        """
+                    ),
+                    {"id": panel_id},
+                )
+            ).scalar_one()
+        )
+        if active_count > 0:
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                "panel has active clients or pending cleanup jobs",
+            )
+        await conn.execute(
+            text("DELETE FROM panels WHERE id=:id"),
+            {"id": panel_id},
+        )
+    return {"status": "deleted"}
 
 
 @app.get("/admin/configs/public", dependencies=[Depends(require_admin)])
