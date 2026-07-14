@@ -150,15 +150,23 @@ def _free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+async def _probe_one(session: aiohttp.ClientSession, url: str, per_site_timeout: float) -> bool:
+    try:
+        async with session.get(url, timeout=aiohttp.ClientTimeout(total=per_site_timeout)) as response:
+            return response.status < 500
+    except (OSError, asyncio.TimeoutError, aiohttp.ClientError):
+        return False
+
+
 async def _check_sites(session: aiohttp.ClientSession, per_site_timeout: float) -> dict[str, bool]:
-    checks: dict[str, bool] = {}
-    for name, url in SITE_CHECKS:
-        try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=per_site_timeout)) as response:
-                checks[name] = response.status < 500
-        except (OSError, asyncio.TimeoutError, aiohttp.ClientError):
-            checks[name] = False
-    return checks
+    # Run all probes concurrently so total wall time is ~per_site_timeout, not
+    # len(SITE_CHECKS) * per_site_timeout (which previously blew the outer
+    # operation deadline and caused spurious 504/CommunicationUnavailable).
+    names = [name for name, _ in SITE_CHECKS]
+    results = await asyncio.gather(
+        *(_probe_one(session, url, per_site_timeout) for _, url in SITE_CHECKS)
+    )
+    return dict(zip(names, results))
 
 
 async def _speed_test(session: aiohttp.ClientSession, bytes_count: int = 1048576) -> float | None:
@@ -185,14 +193,11 @@ async def _check_sites_named(
     sites: tuple[tuple[str, str], ...],
     per_site_timeout: float,
 ) -> dict[str, bool]:
-    checks: dict[str, bool] = {}
-    for name, url in sites:
-        try:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=per_site_timeout)) as response:
-                checks[name] = response.status < 500
-        except (OSError, asyncio.TimeoutError, aiohttp.ClientError):
-            checks[name] = False
-    return checks
+    names = [name for name, _ in sites]
+    results = await asyncio.gather(
+        *(_probe_one(session, url, per_site_timeout) for _, url in sites)
+    )
+    return dict(zip(names, results))
 
 
 def compute_health_score(result: dict[str, Any]) -> float:
