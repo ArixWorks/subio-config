@@ -113,8 +113,18 @@ def outbound_from_uri(uri: str) -> dict[str, Any]:
     if parsed.scheme == "ss":
         if "@" in parsed.netloc:
             method_password, endpoint = parsed.netloc.split("@", 1)
-            method, password = method_password.split(":", 1)
             host, port = endpoint.rsplit(":", 1)
+            if ":" in method_password:
+                # Legacy/plain form: ss://method:password@host:port
+                method, password = method_password.split(":", 1)
+            else:
+                # SIP002 form: ss://BASE64(method:password)@host:port
+                try:
+                    padded = method_password + "=" * (-len(method_password) % 4)
+                    decoded_userinfo = base64.urlsafe_b64decode(padded).decode()
+                    method, password = decoded_userinfo.split(":", 1)
+                except (ValueError, UnicodeDecodeError) as exc:
+                    raise UnsupportedConfiguration("invalid shadowsocks userinfo") from exc
         else:
             decoded = base64.urlsafe_b64decode(parsed.netloc + "=" * (-len(parsed.netloc) % 4)).decode()
             method, password, host, port = decoded.split(":", 3)

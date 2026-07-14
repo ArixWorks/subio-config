@@ -44,3 +44,31 @@ def test_vless_and_vmess_parsing() -> None:
     }
     encoded = base64.urlsafe_b64encode(json.dumps(payload).encode()).decode().rstrip("=")
     assert outbound_from_uri(f"vmess://{encoded}")["protocol"] == "vmess"
+
+
+def test_ss_sip002_userinfo_is_base64_decoded() -> None:
+    """SIP002 shadowsocks URIs encode 'method:password' as base64 userinfo
+    (e.g. ss://BASE64(aes-256-gcm:secret)@host:port) rather than embedding the
+    plain 'method:password' pair directly. outbound_from_uri must base64-decode
+    the userinfo in this case instead of mis-splitting it on ':'.
+    """
+    userinfo = base64.urlsafe_b64encode(b"aes-256-gcm:s3cr3t-password").decode().rstrip("=")
+    uri = f"ss://{userinfo}@example.com:8388?security=none&type=tcp#test"
+    outbound = outbound_from_uri(uri)
+    assert outbound["protocol"] == "shadowsocks"
+    server = outbound["settings"]["servers"][0]
+    assert server["address"] == "example.com"
+    assert server["port"] == 8388
+    assert server["method"] == "aes-256-gcm"
+    assert server["password"] == "s3cr3t-password"
+
+
+def test_ss_legacy_plain_userinfo_still_supported() -> None:
+    """Legacy ss://method:password@host:port (no base64) must keep working."""
+    uri = "ss://aes-256-gcm:s3cr3t-password@example.com:8388"
+    outbound = outbound_from_uri(uri)
+    server = outbound["settings"]["servers"][0]
+    assert server["method"] == "aes-256-gcm"
+    assert server["password"] == "s3cr3t-password"
+    assert server["address"] == "example.com"
+    assert server["port"] == 8388
