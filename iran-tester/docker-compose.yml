@@ -1,0 +1,25 @@
+name: subio-iran-tester
+services:
+  tester:
+    build: .
+    env_file: .env
+    ports: ["127.0.0.1:8080:8080"]
+    read_only: true
+    volumes:
+      - sub-data:/data/subs
+    tmpfs:
+      - /tmp:size=64m,mode=1770
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    pids_limit: 128
+    mem_limit: 512m
+    cpus: 1.5
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/health/live', timeout=2)"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  sub-data:

@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SubIO Admin</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-950 text-slate-100 min-h-screen">
+  <div class="max-w-6xl mx-auto p-6 space-y-6">
+    <header class="flex items-center justify-between border-b border-slate-800 pb-4">
+      <div>
+        <h1 class="text-2xl font-bold text-blue-400">SubIO Admin Panel</h1>
+        <p class="text-slate-400 text-sm">مدیریت ارتباط، SOCKS، پنل‌ها، ایموجی‌ها و پیام‌ها</p>
+      </div>
+      <input id="token" type="password" placeholder="Admin Bearer Token"
+        class="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 w-72" />
+    </header>
+
+    <section class="grid md:grid-cols-3 gap-4" id="stats">
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><p class="text-slate-400">کاربران</p><p id="users" class="text-3xl font-bold">-</p></div>
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><p class="text-slate-400">کانفیگ فعال</p><p id="configs" class="text-3xl font-bold">-</p></div>
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><p class="text-slate-400">حالت ارتباط</p><p id="comm" class="text-3xl font-bold">-</p></div>
+    </section>
+
+    <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+      <h2 class="font-semibold text-lg">ارتباط Main ↔ Tester</h2>
+      <div class="flex gap-2 flex-wrap">
+        <button onclick="probe()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg">Health Probe</button>
+        <button onclick="forceMode('direct')" class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-lg">Force Direct</button>
+        <button onclick="forceMode('arvan_s3')" class="bg-amber-600 hover:bg-amber-500 px-4 py-2 rounded-lg">Force S3</button>
+        <button onclick="clearForce()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg">Clear Force</button>
+      </div>
+      <pre id="comm-log" class="bg-slate-950 p-3 rounded-lg text-xs overflow-auto max-h-48"></pre>
+    </section>
+
+    <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+      <h2 class="font-semibold text-lg">مدیریت SOCKS (چندتایی)</h2>
+      <p class="text-slate-400 text-sm">هر خط یک URI. مثال: <code>socks5://user:pass@host:port#name</code></p>
+      <textarea id="socks-bulk" rows="4" placeholder="یک یا چند پروکسی در هر خط..."
+        class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm font-mono"></textarea>
+      <div class="flex gap-2 flex-wrap">
+        <button onclick="bulkSocks()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg">افزودن گروهی</button>
+        <button onclick="checkSocks()" class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-lg">تست همه</button>
+        <button onclick="syncSocks()" class="bg-amber-600 hover:bg-amber-500 px-4 py-2 rounded-lg">Sync به ایران</button>
+      </div>
+      <div class="border-t border-slate-800 pt-3 grid md:grid-cols-5 gap-2">
+        <input id="socks-id" type="hidden" />
+        <input id="socks-name" placeholder="نام" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
+        <input id="socks-host" placeholder="host" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
+        <input id="socks-port" placeholder="port" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
+        <input id="socks-user" placeholder="user" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
+        <input id="socks-pass" placeholder="pass (خالی=بدون تغییر)" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
+      </div>
+      <div class="flex gap-2 flex-wrap">
+        <button onclick="saveSocks()" class="bg-blue-600 px-3 py-1 rounded">ذخیره / ویرایش</button>
+        <button onclick="clearSocksForm()" class="bg-slate-700 px-3 py-1 rounded">پاک کردن فرم</button>
+      </div>
+      <ul id="socks-list" class="text-sm space-y-2"></ul>
+    </section>
+
+    <section class="grid md:grid-cols-1 gap-4">
+      <div class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+        <h2 class="font-semibold mb-3">UI Emojis / Colors</h2>
+        <div class="grid grid-cols-2 gap-2 mb-3">
+          <input id="emoji-key" placeholder="emoji_public" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
+          <input id="emoji-value" placeholder="value / custom_emoji_id" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
+          <select id="emoji-type" class="bg-slate-950 border border-slate-700 rounded px-2 py-1">
+            <option value="emoji">emoji</option>
+            <option value="custom_emoji">custom_emoji</option>
+            <option value="color">color</option>
+          </select>
+          <button onclick="saveEmoji()" class="bg-blue-600 px-3 py-1 rounded">ذخیره</button>
+        </div>
+        <ul id="emoji-list" class="text-sm space-y-1 max-h-64 overflow-auto"></ul>
+      </div>
+    </section>
+
+    <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-4">
+      <h2 class="font-semibold text-lg">تنظیمات اسکنر کانفیگ</h2>
+      <p class="text-slate-400 text-sm">وقتی @VPNDecryptorBot مشکل دارد، decrypt bot را خاموش کنید. فقط پروتکل‌های فعال اسکن و ذخیره می‌شوند.</p>
+      <div class="grid md:grid-cols-2 gap-3">
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input id="scan-npv" type="checkbox" class="w-4 h-4" />
+          <span>تبدیل NPV → v2ray (محلی)</span>
+        </label>
+        <label class="flex items-center gap-2 cursor-pointer">
+          <input id="scan-decrypt-bot" type="checkbox" class="w-4 h-4" />
+          <span>@VPNDecryptorBot</span>
+        </label>
+      </div>
+      <div class="grid grid-cols-2 md:grid-cols-5 gap-2">
+        <label class="flex items-center gap-2"><input id="proto-vless" type="checkbox" class="w-4 h-4" /> VLESS</label>
+        <label class="flex items-center gap-2"><input id="proto-vmess" type="checkbox" class="w-4 h-4" /> VMess</label>
+        <label class="flex items-center gap-2"><input id="proto-trojan" type="checkbox" class="w-4 h-4" /> Trojan</label>
+        <label class="flex items-center gap-2"><input id="proto-ss" type="checkbox" class="w-4 h-4" /> SS</label>
+        <label class="flex items-center gap-2"><input id="proto-wireguard" type="checkbox" class="w-4 h-4" /> WireGuard</label>
+      </div>
+      <button onclick="saveScannerSettings()" class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-lg">ذخیره تنظیمات اسکنر</button>
+    </section>
+
+    <section class="bg-slate-900 border border-slate-800 rounded-xl p-4">
+      <h2 class="font-semibold mb-2">پیام Timeout تستر</h2>
+      <textarea id="timeout-msg" class="w-full bg-slate-950 border border-slate-700 rounded p-2 text-sm" rows="3"></textarea>
+      <button onclick="saveTimeoutMsg()" class="mt-2 bg-emerald-600 px-4 py-2 rounded-lg">ذخیره پیام</button>
+    </section>
+
+    <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+      <h2 class="font-semibold text-lg">دستیار هوش مصنوعی (Vercel Gateway)</h2>
+      <p id="ai-status" class="text-slate-400 text-sm">...</p>
+      <textarea id="ai-question" rows="3" placeholder="مثلاً: چرا تعداد کانفیگ سالم کم شده؟"
+        class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm"></textarea>
+      <button onclick="askAI()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg">پرسش از AI</button>
+      <pre id="ai-answer" class="bg-slate-950 p-3 rounded-lg text-xs overflow-auto max-h-64 whitespace-pre-wrap"></pre>
+      <div class="border-t border-slate-800 pt-3 space-y-2">
+        <textarea id="broadcast-msg" rows="3" placeholder="متن برودکست خام..."
+          class="w-full bg-slate-950 border border-slate-700 rounded-lg p-2 text-sm"></textarea>
+        <div class="flex gap-2 flex-wrap">
+          <button onclick="polishBroadcast()" class="bg-amber-600 px-3 py-2 rounded-lg">بهبود متن</button>
+          <button onclick="sendBroadcast()" class="bg-emerald-600 px-3 py-2 rounded-lg">ارسال برودکست</button>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    const headers = () => ({ Authorization: `Bearer ${document.getElementById('token').value}`, 'Content-Type': 'application/json' });
+    async function api(path, opts = {}) {
+      const res = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+      if (!res.ok) throw new Error(await res.text());
+      return res.headers.get('content-type')?.includes('json') ? res.json() : res.text();
+    }
+    async function refresh() {
+      const dash = await api('/admin/dashboard');
+      document.getElementById('users').textContent = dash.users;
+      document.getElementById('configs').textContent = dash.configs;
+      document.getElementById('comm').textContent = dash.comm_mode;
+      try {
+        const ai = await api('/admin/ai/status');
+        document.getElementById('ai-status').textContent =
+          `AI=${ai.enabled ? 'ON' : 'OFF'} | sol=${ai.model_sol} | luna=${ai.model_luna} | healthy retest every ${ai.retest.healthy_interval_s}s batch=${ai.retest.healthy_batch}`;
+      } catch (e) {
+        document.getElementById('ai-status').textContent = 'AI status unavailable';
+      }
+      const comm = await api('/admin/communication');
+      document.getElementById('comm-log').textContent = JSON.stringify(comm.recent_switches, null, 2);
+      const socks = await api('/admin/socks');
+      window.__socksById = Object.fromEntries(socks.map(s => [s.id, s]));
+      document.getElementById('socks-list').innerHTML = socks.map(s => `
+        <li class="flex flex-wrap items-center gap-2 bg-slate-950 border border-slate-800 rounded-lg px-3 py-2">
+          <span class="flex-1"><strong>${s.name || s.host}</strong> — ${s.host}:${s.port}
+            <span class="text-slate-400">• ${s.protocol} • ${s.success_rate}% • latency ${s.last_latency_ms ?? '—'}ms
+            • ${s.is_active ? 'فعال' : 'غیرفعال'}</span>
+          </span>
+          <button onclick="editSocks(${s.id})" class="bg-slate-700 px-2 py-1 rounded text-xs">ویرایش</button>
+          <button onclick="toggleSocks(${s.id}, ${!s.is_active})" class="bg-amber-700 px-2 py-1 rounded text-xs">${s.is_active ? 'غیرفعال' : 'فعال'}</button>
+          <button onclick="deleteSocks(${s.id})" class="bg-red-700 px-2 py-1 rounded text-xs">حذف</button>
+        </li>`).join('');
+      const emojis = await api('/admin/ui-assets');
+      document.getElementById('emoji-list').innerHTML = emojis.map(e => `<li><code>${e.key}</code> = ${e.value} (${e.type})</li>`).join('');
+      const msg = await api('/admin/messages/tester_timeout');
+      document.getElementById('timeout-msg').value = msg.value || '';
+      const scan = await api('/admin/scanner-settings');
+      document.getElementById('scan-npv').checked = scan.npv_to_v2ray;
+      document.getElementById('scan-decrypt-bot').checked = scan.decrypt_bot;
+      document.getElementById('proto-vless').checked = scan.protocols.vless;
+      document.getElementById('proto-vmess').checked = scan.protocols.vmess;
+      document.getElementById('proto-trojan').checked = scan.protocols.trojan;
+      document.getElementById('proto-ss').checked = scan.protocols.ss;
+      document.getElementById('proto-wireguard').checked = scan.protocols.wireguard;
+    }
+    async function probe() { await api('/admin/communication/probe', { method: 'POST' }); await refresh(); }
+    async function forceMode(mode) { await api('/admin/communication/force', { method: 'POST', body: JSON.stringify({ mode }) }); await refresh(); }
+    async function clearForce() { await api('/admin/communication/force', { method: 'DELETE' }); await refresh(); }
+    async function clearSocksForm() {
+      ['socks-id','socks-name','socks-host','socks-port','socks-user','socks-pass'].forEach(id => document.getElementById(id).value = '');
+    }
+    function editSocks(id) {
+      const s = (window.__socksById || {})[id];
+      if (!s) return;
+      document.getElementById('socks-id').value = s.id;
+      document.getElementById('socks-name').value = s.name || '';
+      document.getElementById('socks-host').value = s.host || '';
+      document.getElementById('socks-port').value = s.port || '';
+      document.getElementById('socks-user').value = s.username || '';
+      document.getElementById('socks-pass').value = '';
+    }
+    async function saveSocks() {
+      const id = document.getElementById('socks-id').value;
+      const body = {
+        name: document.getElementById('socks-name').value || document.getElementById('socks-host').value,
+        host: document.getElementById('socks-host').value,
+        port: Number(document.getElementById('socks-port').value),
+        username: document.getElementById('socks-user').value || null,
+        password: document.getElementById('socks-pass').value || null,
+        protocol: 'socks5',
+        is_active: true,
+      };
+      if (id) await api(`/admin/socks/${id}`, { method: 'PUT', body: JSON.stringify(body) });
+      else await api('/admin/socks', { method: 'POST', body: JSON.stringify(body) });
+      clearSocksForm();
+      await refresh();
+    }
+    async function bulkSocks() {
+      const text = document.getElementById('socks-bulk').value;
+      const result = await api('/admin/socks/bulk', { method: 'POST', body: JSON.stringify({ text }) });
+      alert(`افزوده شد: ${result.added} | رد شد: ${result.skipped}`);
+      document.getElementById('socks-bulk').value = '';
+      await refresh();
+    }
+    async function deleteSocks(id) {
+      if (!confirm('حذف شود؟')) return;
+      await api(`/admin/socks/${id}`, { method: 'DELETE' });
+      await refresh();
+    }
+    async function toggleSocks(id, active) {
+      await api(`/admin/socks/${id}/active`, { method: 'PATCH', body: JSON.stringify({ is_active: active }) });
+      await refresh();
+    }
+    async function checkSocks() { await api('/admin/socks/check', { method: 'POST' }); await refresh(); }
+    async function syncSocks() { const r = await api('/admin/socks/sync', { method: 'POST' }); alert(`Sync شد: ${r.count || 0} پروکسی`); }
+    async function addSocks() { return saveSocks(); }
+    async function saveEmoji() {
+      await api('/admin/ui-assets', { method: 'PUT', body: JSON.stringify({
+        key: document.getElementById('emoji-key').value,
+        value: document.getElementById('emoji-value').value,
+        type: document.getElementById('emoji-type').value,
+        language: 'fa',
+      })});
+      await refresh();
+    }
+    async function saveTimeoutMsg() {
+      await api('/admin/messages/tester_timeout', { method: 'PUT', body: JSON.stringify({ value: document.getElementById('timeout-msg').value }) });
+    }
+    async function saveScannerSettings() {
+      await api('/admin/scanner-settings', { method: 'PUT', body: JSON.stringify({
+        npv_to_v2ray: document.getElementById('scan-npv').checked,
+        decrypt_bot: document.getElementById('scan-decrypt-bot').checked,
+        protocols: {
+          vless: document.getElementById('proto-vless').checked,
+          vmess: document.getElementById('proto-vmess').checked,
+          trojan: document.getElementById('proto-trojan').checked,
+          ss: document.getElementById('proto-ss').checked,
+          wireguard: document.getElementById('proto-wireguard').checked,
+        },
+      })});
+      alert('تنظیمات اسکنر ذخیره شد');
+    }
+    async function askAI() {
+      const q = document.getElementById('ai-question').value;
+      const res = await api('/admin/ai/chat', { method: 'POST', body: JSON.stringify({ question: q }) });
+      document.getElementById('ai-answer').textContent = res.answer;
+    }
+    async function polishBroadcast() {
+      const msg = document.getElementById('broadcast-msg').value;
+      const res = await api('/admin/ai/polish-broadcast', { method: 'POST', body: JSON.stringify({ message: msg }) });
+      document.getElementById('broadcast-msg').value = res.message;
+    }
+    async function sendBroadcast() {
+      const msg = document.getElementById('broadcast-msg').value;
+      await api('/admin/broadcasts', { method: 'POST', body: JSON.stringify({ message: msg, target: 'all' }) });
+      alert('برودکست در صف قرار گرفت');
+    }
+    document.getElementById('token').addEventListener('change', refresh);
+  </script>
+</body>
+</html>
