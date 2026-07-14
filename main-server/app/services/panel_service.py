@@ -404,7 +404,7 @@ class PanelService:
             JOIN subscriptions s ON s.id=pc.subscription_id
             WHERE pc.is_active
               AND (NOT s.is_active OR s.expires_at<=now())
-              AND (:user_id IS NULL OR s.user_id=:user_id)
+              AND (CAST(:user_id AS BIGINT) IS NULL OR s.user_id=CAST(:user_id AS BIGINT))
             """,
             {"user_id": user_id},
         )

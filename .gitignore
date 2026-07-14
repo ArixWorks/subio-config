@@ -39,3 +39,6 @@ node_modules/
 
 # Docker local overrides
 docker-compose.override.yml
+
+# Local ops/server credentials — never commit
+.ops/
