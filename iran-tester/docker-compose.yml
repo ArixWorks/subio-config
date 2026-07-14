@@ -8,7 +8,7 @@ services:
     volumes:
       - sub-data:/data/subs
     tmpfs:
-      - /tmp:size=64m,mode=1770
+      - /tmp:size=64m,mode=1777,uid=999,gid=999
     cap_drop: [ALL]
     security_opt: ["no-new-privileges:true"]
     pids_limit: 128
