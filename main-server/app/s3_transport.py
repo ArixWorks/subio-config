@@ -38,12 +38,17 @@ class S3FallbackStore:
         pending_key = f"pending/{int(time.time())}_{random_part}_{job_id}.enc"
         result_key = f"results/{job_id}.enc"
         async with self._session.client("s3", **self._client_options) as client:
+            # NOTE: ArvanCloud's S3-compatible storage rejects the
+            # ServerSideEncryption parameter with HTTP 400 InvalidArgument
+            # (it neither requires nor supports SSE-S3 headers). The payload
+            # is already end-to-end encrypted (PayloadCipher/AES-GCM) before
+            # it ever reaches this transport, so server-side encryption at
+            # rest is not required for confidentiality here.
             await client.put_object(
                 Bucket=self._bucket,
                 Key=pending_key,
                 Body=envelope.encode(),
                 ContentType="application/octet-stream",
-                ServerSideEncryption="AES256",
                 Metadata={"job-id": str(job_id)},
             )
             deadline = asyncio.get_running_loop().time() + timeout
