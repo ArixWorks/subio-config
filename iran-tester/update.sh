@@ -36,7 +36,7 @@ elif [[ -d "$SCRIPT_DIR/.git" ]]; then
   info "Pulling latest from GitHub..."
   git pull --ff-only || fail "git pull failed"
 else
-  fail "Not a git checkout. Clone first: git clone https://github.com/ArixWorks/subio-config.git /opt/subio"
+  warn "No git repo here — rebuilding from current files (OK for copy/rsync deploy)"
 fi
 
 [[ -f .env ]] || fail ".env missing — keep your secrets local; never commit .env"
