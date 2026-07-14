@@ -19,6 +19,7 @@ from app.ai.user_help import smart_error_help
 from app.communication import CommunicationUnavailable
 from app.config import get_settings
 from app.db import Database
+from app.formatting import format_expiry, format_volume_pair
 from app.logging import configure_logging
 from app.middleware.forced_channels import ForcedChannelMiddleware
 from app.security import PayloadCipher
@@ -219,10 +220,12 @@ async def my_subscription(query: CallbackQuery) -> None:
     settings = get_settings()
     url = await BotContext.subscriptions.subscription_url(sub["token"], str(settings.public_base_url))
     ok = await BotContext.emoji.text("success", lang, "✅")
+    volume = format_volume_pair(sub.get("volume_used_bytes"), sub.get("volume_limit_bytes"))
+    expires = format_expiry(sub.get("expires_at"), lang)
     await query.message.answer(
         f"{ok} {await _t('اشتراک فعال', lang)}\n"
-        f"{await _t('انقضا', lang)}: {sub['expires_at']}\n"
-        f"{await _t('مصرف', lang)}: {sub['volume_used_bytes']} / {sub['volume_limit_bytes']}\n"
+        f"{await _t('انقضا', lang)}: {expires}\n"
+        f"{await _t('حجم مصرفی', lang)}: {volume}\n"
         f"{await _t('لینک ساب', lang)}: {url}"
     )
 
