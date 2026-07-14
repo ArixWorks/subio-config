@@ -8,14 +8,18 @@
 </head>
 <body class="bg-slate-950 text-slate-100 min-h-screen">
   <div class="max-w-6xl mx-auto p-6 space-y-6">
-    <header class="flex items-center justify-between border-b border-slate-800 pb-4">
+    <header class="flex flex-wrap items-center justify-between gap-3 border-b border-slate-800 pb-4">
       <div>
         <h1 class="text-2xl font-bold text-blue-400">SubIO Admin Panel</h1>
-        <p class="text-slate-400 text-sm">مدیریت ارتباط، SOCKS، پنل‌ها، ایموجی‌ها و پیام‌ها</p>
+        <p class="text-slate-400 text-sm">Comm · SOCKS · 3x-ui panels · Scanner · AI</p>
       </div>
-      <input id="token" type="password" placeholder="Admin Bearer Token"
-        class="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 w-72" />
+      <div class="flex gap-2 items-center">
+        <input id="token" type="password" placeholder="Admin Bearer Token (ADMIN_TOKEN)"
+          class="bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 w-72" />
+        <button onclick="saveTokenAndRefresh()" class="bg-blue-600 hover:bg-blue-500 px-4 py-2 rounded-lg">Load</button>
+      </div>
     </header>
+    <p id="toast" class="hidden text-sm px-3 py-2 rounded-lg"></p>
 
     <section class="grid md:grid-cols-3 gap-4" id="stats">
       <div class="bg-slate-900 border border-slate-800 rounded-xl p-4"><p class="text-slate-400">کاربران</p><p id="users" class="text-3xl font-bold">-</p></div>
@@ -32,6 +36,19 @@
         <button onclick="clearForce()" class="bg-slate-700 hover:bg-slate-600 px-4 py-2 rounded-lg">Clear Force</button>
       </div>
       <pre id="comm-log" class="bg-slate-950 p-3 rounded-lg text-xs overflow-auto max-h-48"></pre>
+    </section>
+
+    <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+      <h2 class="font-semibold text-lg">پنل‌های 3x-ui (اشتراک خصوصی)</h2>
+      <p class="text-slate-400 text-sm">بدون حداقل یک پنل فعال، ساخت اشتراک ممکن است خطا بدهد.</p>
+      <div class="grid md:grid-cols-4 gap-2">
+        <input id="panel-name" placeholder="نام (مثلاً DE-1)" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
+        <input id="panel-url" placeholder="https://panel.example.com:2053" class="bg-slate-950 border border-slate-700 rounded px-2 py-1 md:col-span-2" />
+        <input id="panel-user" placeholder="username" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
+        <input id="panel-pass" type="password" placeholder="password" class="bg-slate-950 border border-slate-700 rounded px-2 py-1" />
+      </div>
+      <button onclick="addPanel()" class="bg-emerald-600 hover:bg-emerald-500 px-4 py-2 rounded-lg">افزودن پنل</button>
+      <ul id="panel-list" class="text-sm space-y-2"></ul>
     </section>
 
     <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
@@ -78,7 +95,7 @@
 
     <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-4">
       <h2 class="font-semibold text-lg">تنظیمات اسکنر کانفیگ</h2>
-      <p class="text-slate-400 text-sm">وقتی @VPNDecryptorBot مشکل دارد، decrypt bot را خاموش کنید. فقط پروتکل‌های فعال اسکن و ذخیره می‌شوند.</p>
+      <p class="text-slate-400 text-sm">وقتی @VPNDecryptorBot مشکل دارد، decrypt bot را خاموش کنید.</p>
       <div class="grid md:grid-cols-2 gap-3">
         <label class="flex items-center gap-2 cursor-pointer">
           <input id="scan-npv" type="checkbox" class="w-4 h-4" />
@@ -124,11 +141,44 @@
   </div>
 
   <script>
-    const headers = () => ({ Authorization: `Bearer ${document.getElementById('token').value}`, 'Content-Type': 'application/json' });
+    const TOKEN_KEY = 'subio_admin_token';
+    function toast(msg, ok = true) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className = ok
+        ? 'text-sm px-3 py-2 rounded-lg bg-emerald-900/60 border border-emerald-700 text-emerald-200'
+        : 'text-sm px-3 py-2 rounded-lg bg-red-900/60 border border-red-700 text-red-200';
+    }
+    function getToken() {
+      return (document.getElementById('token').value || localStorage.getItem(TOKEN_KEY) || '').trim();
+    }
+    function headers() {
+      const token = getToken();
+      if (!token) throw new Error('Admin token خالی است. ADMIN_TOKEN را از .env کپی کنید و Load بزنید.');
+      return { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' };
+    }
     async function api(path, opts = {}) {
-      const res = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
-      if (!res.ok) throw new Error(await res.text());
-      return res.headers.get('content-type')?.includes('json') ? res.json() : res.text();
+      try {
+        const res = await fetch(path, { ...opts, headers: { ...headers(), ...(opts.headers || {}) } });
+        const text = await res.text();
+        let data = text;
+        try { data = text ? JSON.parse(text) : null; } catch (_) {}
+        if (!res.ok) {
+          const detail = typeof data === 'object' && data ? (data.detail || JSON.stringify(data)) : text;
+          throw new Error(`${res.status}: ${detail || res.statusText}`);
+        }
+        return data;
+      } catch (err) {
+        toast(String(err.message || err), false);
+        throw err;
+      }
+    }
+    async function saveTokenAndRefresh() {
+      const token = document.getElementById('token').value.trim();
+      if (!token) { toast('Token خالی است', false); return; }
+      localStorage.setItem(TOKEN_KEY, token);
+      toast('Token ذخیره شد');
+      await refresh();
     }
     async function refresh() {
       const dash = await api('/admin/dashboard');
@@ -139,11 +189,15 @@
         const ai = await api('/admin/ai/status');
         document.getElementById('ai-status').textContent =
           `AI=${ai.enabled ? 'ON' : 'OFF'} | sol=${ai.model_sol} | luna=${ai.model_luna} | healthy retest every ${ai.retest.healthy_interval_s}s batch=${ai.retest.healthy_batch}`;
-      } catch (e) {
+      } catch (_) {
         document.getElementById('ai-status').textContent = 'AI status unavailable';
       }
       const comm = await api('/admin/communication');
       document.getElementById('comm-log').textContent = JSON.stringify(comm.recent_switches, null, 2);
+      const panels = await api('/admin/panels');
+      document.getElementById('panel-list').innerHTML = panels.length
+        ? panels.map(p => `<li class="bg-slate-950 border border-slate-800 rounded px-3 py-2"><strong>${p.name}</strong> — ${p.base_url} • ${p.is_active ? 'فعال' : 'غیرفعال'}</li>`).join('')
+        : '<li class="text-amber-400">هنوز پنلی ثبت نشده</li>';
       const socks = await api('/admin/socks');
       window.__socksById = Object.fromEntries(socks.map(s => [s.id, s]));
       document.getElementById('socks-list').innerHTML = socks.map(s => `
@@ -168,6 +222,18 @@
       document.getElementById('proto-trojan').checked = scan.protocols.trojan;
       document.getElementById('proto-ss').checked = scan.protocols.ss;
       document.getElementById('proto-wireguard').checked = scan.protocols.wireguard;
+      toast('داده‌ها بارگذاری شد');
+    }
+    async function addPanel() {
+      await api('/admin/panels', { method: 'POST', body: JSON.stringify({
+        name: document.getElementById('panel-name').value,
+        base_url: document.getElementById('panel-url').value,
+        username: document.getElementById('panel-user').value,
+        password: document.getElementById('panel-pass').value,
+      })});
+      toast('پنل ذخیره شد');
+      ['panel-name','panel-url','panel-user','panel-pass'].forEach(id => document.getElementById(id).value = '');
+      await refresh();
     }
     async function probe() { await api('/admin/communication/probe', { method: 'POST' }); await refresh(); }
     async function forceMode(mode) { await api('/admin/communication/force', { method: 'POST', body: JSON.stringify({ mode }) }); await refresh(); }
@@ -198,13 +264,14 @@
       };
       if (id) await api(`/admin/socks/${id}`, { method: 'PUT', body: JSON.stringify(body) });
       else await api('/admin/socks', { method: 'POST', body: JSON.stringify(body) });
+      toast('SOCKS ذخیره شد');
       clearSocksForm();
       await refresh();
     }
     async function bulkSocks() {
       const text = document.getElementById('socks-bulk').value;
       const result = await api('/admin/socks/bulk', { method: 'POST', body: JSON.stringify({ text }) });
-      alert(`افزوده شد: ${result.added} | رد شد: ${result.skipped}`);
+      toast(`افزوده شد: ${result.added} | رد شد: ${result.skipped}`);
       document.getElementById('socks-bulk').value = '';
       await refresh();
     }
@@ -218,8 +285,7 @@
       await refresh();
     }
     async function checkSocks() { await api('/admin/socks/check', { method: 'POST' }); await refresh(); }
-    async function syncSocks() { const r = await api('/admin/socks/sync', { method: 'POST' }); alert(`Sync شد: ${r.count || 0} پروکسی`); }
-    async function addSocks() { return saveSocks(); }
+    async function syncSocks() { const r = await api('/admin/socks/sync', { method: 'POST' }); toast(`Sync شد: ${r.count || 0} پروکسی`); }
     async function saveEmoji() {
       await api('/admin/ui-assets', { method: 'PUT', body: JSON.stringify({
         key: document.getElementById('emoji-key').value,
@@ -227,10 +293,12 @@
         type: document.getElementById('emoji-type').value,
         language: 'fa',
       })});
+      toast('Emoji ذخیره شد');
       await refresh();
     }
     async function saveTimeoutMsg() {
       await api('/admin/messages/tester_timeout', { method: 'PUT', body: JSON.stringify({ value: document.getElementById('timeout-msg').value }) });
+      toast('پیام timeout ذخیره شد');
     }
     async function saveScannerSettings() {
       await api('/admin/scanner-settings', { method: 'PUT', body: JSON.stringify({
@@ -244,7 +312,7 @@
           wireguard: document.getElementById('proto-wireguard').checked,
         },
       })});
-      alert('تنظیمات اسکنر ذخیره شد');
+      toast('تنظیمات اسکنر ذخیره شد');
     }
     async function askAI() {
       const q = document.getElementById('ai-question').value;
@@ -255,13 +323,19 @@
       const msg = document.getElementById('broadcast-msg').value;
       const res = await api('/admin/ai/polish-broadcast', { method: 'POST', body: JSON.stringify({ message: msg }) });
       document.getElementById('broadcast-msg').value = res.message;
+      toast('متن بهبود یافت');
     }
     async function sendBroadcast() {
       const msg = document.getElementById('broadcast-msg').value;
       await api('/admin/broadcasts', { method: 'POST', body: JSON.stringify({ message: msg, target: 'all' }) });
-      alert('برودکست در صف قرار گرفت');
+      toast('برودکست در صف قرار گرفت');
     }
-    document.getElementById('token').addEventListener('change', refresh);
+    // boot
+    const saved = localStorage.getItem(TOKEN_KEY);
+    if (saved) {
+      document.getElementById('token').value = saved;
+      refresh().catch(() => {});
+    }
   </script>
 </body>
 </html>

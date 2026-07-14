@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # =============================================================================
 # SubIO Iran Tester — one-command update from GitHub
-# Usage (on Iran VPS):
-#   cd /opt/subio/iran-tester
-#   sudo ./update.sh
+# Usage: cd /opt/subio/iran-tester && sudo ./update.sh
+# On VPS, local edits to tracked files are discarded (`.env` is kept).
 # =============================================================================
 set -Eeuo pipefail
 
@@ -25,22 +24,31 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 cd "$SCRIPT_DIR"
 
-if [[ -d "$REPO_ROOT/.git" ]]; then
-  cd "$REPO_ROOT"
-  info "Pulling latest from GitHub (repo root)..."
+sync_git() {
+  local root="$1"
+  cd "$root"
+  info "Syncing Git to origin/main (keeps .env; discards local tracked edits)..."
   git fetch origin
-  BRANCH="$(git rev-parse --abbrev-ref HEAD)"
-  git pull --ff-only origin "$BRANCH" || fail "git pull failed — resolve conflicts or stash local edits"
+  local branch
+  branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo main)"
+  if git show-ref --verify --quiet "refs/remotes/origin/${branch}"; then
+    git reset --hard "origin/${branch}"
+  else
+    git reset --hard origin/main
+  fi
+  ok "Git sync complete ($(git rev-parse --short HEAD))"
+}
+
+if [[ -d "$REPO_ROOT/.git" ]]; then
+  sync_git "$REPO_ROOT"
   cd "$SCRIPT_DIR"
 elif [[ -d "$SCRIPT_DIR/.git" ]]; then
-  info "Pulling latest from GitHub..."
-  git pull --ff-only || fail "git pull failed"
+  sync_git "$SCRIPT_DIR"
 else
-  warn "No git repo here — rebuilding from current files (OK for copy/rsync deploy)"
+  warn "No git repo here — rebuilding from current files"
 fi
 
 [[ -f .env ]] || fail ".env missing — keep your secrets local; never commit .env"
-
 sed -i 's/\r$//' .env install.sh update.sh 2>/dev/null || true
 
 info "Validating PAYLOAD_ENCRYPTION_KEY..."
@@ -63,6 +71,5 @@ if curl -fsS http://127.0.0.1:8080/health/live >/dev/null; then
 else
   warn "Health check failed — run: docker compose logs --tail=80 tester"
 fi
-
 docker compose ps
 ok "Update complete"
