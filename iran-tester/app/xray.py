@@ -9,7 +9,7 @@ from typing import Any
 from urllib.parse import parse_qs, unquote, urlparse
 
 import aiohttp
-from aiohttp_socks import ProxyConnector
+from aiohttp_socks import ProxyConnectionError, ProxyConnector, ProxyError, ProxyTimeoutError
 
 
 class UnsupportedConfiguration(ValueError):
@@ -154,7 +154,23 @@ async def _probe_one(session: aiohttp.ClientSession, url: str, per_site_timeout:
     try:
         async with session.get(url, timeout=aiohttp.ClientTimeout(total=per_site_timeout)) as response:
             return response.status < 500
-    except (OSError, asyncio.TimeoutError, aiohttp.ClientError):
+    except (
+        OSError,
+        asyncio.TimeoutError,
+        aiohttp.ClientError,
+        ProxyError,
+        ProxyConnectionError,
+        ProxyTimeoutError,
+    ):
+        # ProxyError/ProxyConnectionError/ProxyTimeoutError are raised by
+        # aiohttp-socks (v0.11+) when the local SOCKS5 outbound (i.e. the
+        # user's VPN config) refuses or can't establish a connection. In this
+        # aiohttp-socks version none of them inherit from OSError/Exception
+        # subclasses we already catch, so they must be listed explicitly —
+        # otherwise a dead config leaks an exception out of run_test entirely
+        # instead of yielding a graceful "unreachable" result, which upstream
+        # (main-server's ResilientTesterClient) misreads as a tester outage
+        # and trips the circuit breaker, poisoning the whole discovery queue.
         return False
 
 
@@ -178,7 +194,14 @@ async def _speed_test(session: aiohttp.ClientSession, bytes_count: int = 1048576
             data = await response.read()
             elapsed = max(time.monotonic() - started, 0.001)
             return round((len(data) * 8) / (elapsed * 1_000_000), 2)
-    except (OSError, asyncio.TimeoutError, aiohttp.ClientError):
+    except (
+        OSError,
+        asyncio.TimeoutError,
+        aiohttp.ClientError,
+        ProxyError,
+        ProxyConnectionError,
+        ProxyTimeoutError,
+    ):
         return None
 
 
@@ -266,14 +289,28 @@ async def run_test(
             connector = ProxyConnector.from_url(f"socks5://127.0.0.1:{port}")
             per_site = max(1.2, min(3.0, timeout / 4))
             async with aiohttp.ClientSession(connector=connector) as session:
-                async with session.get(test_url, timeout=aiohttp.ClientTimeout(total=per_site)) as response:
-                    reachable = response.status < 500
+                # Use the same safe probe helper as the secondary site checks.
+                # A dead/unreachable proxy must resolve to reachable=False so we
+                # can return a graceful low-score result — never let a bare
+                # connection error/timeout propagate out of run_test, since that
+                # gets misclassified upstream as a 504 "deadline exceeded" and
+                # trips the main-server circuit breaker, poisoning the whole
+                # discovery batch (see CommunicationUnavailable investigation).
+                reachable = await _probe_one(session, test_url, per_site)
                 if mode == "cheap":
-                    checks = await _check_sites_named(session, CHEAP_SITES, per_site)
+                    checks = (
+                        await _check_sites_named(session, CHEAP_SITES, per_site)
+                        if reachable
+                        else {name: False for name, _ in CHEAP_SITES}
+                    )
                     # Tiny 16KiB probe (~0.016MB) instead of 1MiB speed test.
                     download_mbps = await _speed_test(session, bytes_count=16_384) if reachable else None
                 else:
-                    checks = await _check_sites(session, per_site)
+                    checks = (
+                        await _check_sites(session, per_site)
+                        if reachable
+                        else {name: False for name, _ in SITE_CHECKS}
+                    )
                     download_mbps = await _speed_test(session, bytes_count=1_048_576) if reachable else None
             latency = round((time.monotonic() - started) * 1000)
             checks["http"] = reachable

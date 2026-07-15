@@ -5,8 +5,10 @@ import json
 import os
 import time
 
+import pytest
+
 from app.security import PayloadCipher, ReplayGuard, verify_signature
-from app.xray import outbound_from_uri
+from app.xray import outbound_from_uri, run_test
 
 
 def test_encryption_and_signature() -> None:
@@ -72,3 +74,32 @@ def test_ss_legacy_plain_userinfo_still_supported() -> None:
     assert server["password"] == "s3cr3t-password"
     assert server["address"] == "example.com"
     assert server["port"] == 8388
+
+
+@pytest.mark.asyncio
+async def test_run_test_returns_unreachable_instead_of_raising_on_dead_proxy(
+    tmp_path,
+) -> None:
+    """When the SOCKS proxy never accepts the outer test_url connection (e.g. the
+    upstream node is dead), run_test must resolve to reachable=False rather than
+    letting an OSError/TimeoutError escape. A leaked exception here previously
+    propagated all the way up through the FastAPI handler as a 502/504, which the
+    main-server's ResilientTesterClient could not distinguish from an actual
+    tester outage — repeatedly tripping the circuit breaker and stalling the
+    entire discovery queue behind a single unreachable "poison pill" config.
+    """
+    # Fake xray binary: starts, never listens on the SOCKS port, just sleeps.
+    fake_binary = tmp_path / "fake-xray.sh"
+    fake_binary.write_text("#!/bin/sh\nsleep 30\n")
+    fake_binary.chmod(0o755)
+
+    result = await run_test(
+        "ss://aes-256-gcm:s3cr3t-password@203.0.113.1:8388",
+        str(fake_binary),
+        "https://example.invalid/generate_204",
+        timeout=2,
+        mode="cheap",
+    )
+    assert result["reachable"] is False
+    assert result["health_score"] == 0.0
+    assert all(value is False for value in result["checks"].values() if value is not None)

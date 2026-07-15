@@ -63,13 +63,28 @@ class ConfigTesterService:
         queued = 0
         for row in rows:
             uri = self._cipher.decrypt(str(row["uri_enc"]), aad=b"subio:config:v1")["uri"]
-            await self.test_and_store(
-                config_id=str(row["id"]),
-                uri=uri,
-                protocol=str(row["protocol"]),
-                mode="full",
-                purpose="discover",
-            )
+            try:
+                await self.test_and_store(
+                    config_id=str(row["id"]),
+                    uri=uri,
+                    protocol=str(row["protocol"]),
+                    mode="full",
+                    purpose="discover",
+                )
+            except CommunicationUnavailable:
+                # A single unreachable/slow config must never block the rest of
+                # the discovery batch. Without this guard, one "poison-pill"
+                # config sitting at the head of the untested queue (ordered by
+                # created_at ASC) would deterministically re-trigger the same
+                # tester timeout on every cron run, aborting the whole job and
+                # starving every other pending config behind it indefinitely.
+                # test_and_store already recorded the failed test_job before
+                # raising, so we just log, skip, and keep draining the batch.
+                logger.warning(
+                    "queue_untested_public_configs_item_unavailable",
+                    extra={"config_id": str(row["id"])},
+                )
+                continue
             queued += 1
         return queued
 
