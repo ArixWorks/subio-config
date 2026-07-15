@@ -63,9 +63,20 @@ def looks_encrypted(text: str) -> bool:
     return bool(re.search(r"nm-[a-z0-9]+://", lowered))
 
 
-# Alias kept for callers/tests that parse a decryptor .json payload directly
-# through this module rather than importing decryptor_json_to_uris themselves.
-_configs_from_json = decryptor_json_to_uris
+def _configs_from_json(payload: Any) -> set[str]:
+    """Extracts config URIs from a decryptor .json payload's "configs" list.
+
+    Handles both the structured VPNDecryptorBot profile shape (list of dicts,
+    delegated to decryptor_json_to_uris) and the simpler shape where the
+    "configs" list already contains ready-made URI strings.
+    """
+    found: set[str] = decryptor_json_to_uris(payload)
+    configs = payload.get("configs") if isinstance(payload, dict) else None
+    if isinstance(configs, list):
+        for item in configs:
+            if isinstance(item, str) and CONFIG_PATTERN.match(item.strip()):
+                found.add(item.strip())
+    return found
 
 
 def document_needs_decrypt(filename: str | None) -> bool:
