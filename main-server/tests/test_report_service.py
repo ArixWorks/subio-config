@@ -153,26 +153,36 @@ async def test_ten_distinct_reports_across_operators_blocks_globally() -> None:
     service = ReportService(db, pipeline_events=_FakeNullEvents())  # type: ignore[arg-type]
 
     reporter_id = 1
-    outcome = None
-    for _ in range(5):
-        outcome = await service.submit_report(
+    irancell_fifth_outcome = None
+    for i in range(5):
+        irancell_fifth_outcome = await service.submit_report(
             config_id="cfg-1", reporter_user_id=reporter_id, operator_code="irancell", detail="bad"
         )
         reporter_id += 1
     for _ in range(4):
-        outcome = await service.submit_report(
+        await service.submit_report(
             config_id="cfg-1", reporter_user_id=reporter_id, operator_code="mci", detail="bad"
         )
         reporter_id += 1
-    outcome = await service.submit_report(
+    final_outcome = await service.submit_report(
         config_id="cfg-1", reporter_user_id=reporter_id, operator_code="other", detail="bad"
     )
 
-    assert outcome is not None
-    assert outcome.operator_excluded is True  # irancell crossed its own threshold too
-    assert outcome.globally_blocked is True
+    # The 5th irancell report is the one that actually crosses the
+    # per-operator threshold; its own outcome must reflect that.
+    assert irancell_fifth_outcome is not None
+    assert irancell_fifth_outcome.operator_excluded is True
+    assert irancell_fifth_outcome.globally_blocked is False
+
+    # The 10th report overall (on "other") is the one that crosses the
+    # global threshold, but "other" itself never reached 5 on its own.
+    assert final_outcome.globally_blocked is True
+    assert final_outcome.operator_excluded is False
+
     assert "cfg-1" in db.globally_blocked
+    assert db.exclusions[("cfg-1", "irancell")] == PER_OPERATOR_THRESHOLD
     assert db.exclusions.get(("cfg-1", "mci")) is None  # mci alone never reached 5
+    assert db.exclusions.get(("cfg-1", "other")) is None  # other alone never reached 5
 
 
 @pytest.mark.asyncio

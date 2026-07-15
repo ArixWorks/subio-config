@@ -63,6 +63,11 @@ def looks_encrypted(text: str) -> bool:
     return bool(re.search(r"nm-[a-z0-9]+://", lowered))
 
 
+# Alias kept for callers/tests that parse a decryptor .json payload directly
+# through this module rather than importing decryptor_json_to_uris themselves.
+_configs_from_json = decryptor_json_to_uris
+
+
 def document_needs_decrypt(filename: str | None) -> bool:
     if not filename:
         return False

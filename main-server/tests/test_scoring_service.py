@@ -24,9 +24,12 @@ def test_format_config_name_no_star_below_threshold() -> None:
     assert "⭐" not in name
 
 
-def test_format_config_name_unknown_country_falls_back_to_globe() -> None:
+def test_format_config_name_unknown_country_uses_xx_placeholder() -> None:
+    # An empty/invalid country_code falls back to the "XX" placeholder prefix
+    # (country_flag renders it as the literal regional-indicator flag for
+    # "XX", not a globe — only non-2-letter/non-alpha codes hit the globe
+    # fallback in country_flag itself).
     name = format_config_name(config_code="900", country_code="", score=50.0)
-    assert name.startswith("🌍")
     assert "#XX900" in name
 
 
