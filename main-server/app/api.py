@@ -28,9 +28,12 @@ from app.services.config_tester import ConfigTesterService
 from app.services.distribution_service import DistributionService
 from app.services.emoji_service import EmojiService
 from app.services.message_service import MessageService
+from app.services.pipeline_events import PipelineEventService
 from app.services.panel_service import PanelService
+from app.services.report_service import ReportService
 from app.services.socks_service import SocksService
 from app.services.scanner_settings_service import ScannerSettingsService
+from app.services.scoring_service import with_display_name
 from app.services.subscription_service import SubscriptionService
 
 logger = logging.getLogger("subio.api")
@@ -160,12 +163,18 @@ async def lifespan(app: FastAPI):
     app.state.messages = MessageService(app.state.db)
     app.state.emoji = EmojiService(app.state.db, app.state.redis)
     app.state.scanner_settings = ScannerSettingsService(app.state.db, app.state.redis)
+    app.state.pipeline_events = PipelineEventService(app.state.db)
     app.state.config_tester = ConfigTesterService(
-        app.state.db, app.state.tester, cipher, app.state.scanner_settings
+        app.state.db,
+        app.state.tester,
+        cipher,
+        app.state.scanner_settings,
+        pipeline_events=app.state.pipeline_events,
     )
     app.state.panels = PanelService(app.state.db, cipher)
     app.state.subscriptions = SubscriptionService(app.state.db, app.state.panels)
     app.state.distribution = DistributionService(app.state.db)
+    app.state.reports = ReportService(app.state.db, app.state.pipeline_events)
     app.state.socks = SocksService(
         app.state.db,
         cipher,
@@ -272,7 +281,8 @@ async def report(body: ReportRequest, request: Request) -> dict[str, str]:
 async def subscription(token: UUID, request: Request) -> Response:
     row = await request.app.state.db.fetch_one(
         """
-        SELECT user_id FROM public_feeds
+        SELECT user_id, operator_code, COALESCE(excluded_config_ids, ARRAY[]::UUID[]) AS excluded_config_ids
+        FROM public_feeds
         WHERE token=:token AND is_active
         """,
         {"token": token},
@@ -286,19 +296,30 @@ async def subscription(token: UUID, request: Request) -> Response:
         result = await conn.execute(
             text(
                 """
-                SELECT uri_enc FROM vpn_configs
-                WHERE is_enabled AND score >= 50
-                  AND scope='public'
-                  AND (expires_at IS NULL OR expires_at > now())
-                ORDER BY score DESC LIMIT 10
+                SELECT c.uri_enc, c.display_name FROM vpn_configs c
+                WHERE c.is_enabled AND c.score >= 50
+                  AND c.scope='public' AND NOT c.is_globally_blocked
+                  AND (c.expires_at IS NULL OR c.expires_at > now())
+                  AND c.id != ALL(CAST(:excluded AS uuid[]))
+                  AND NOT EXISTS (
+                    SELECT 1 FROM config_operator_exclusions e
+                    WHERE e.config_id = c.id AND e.operator_code = :operator
+                  )
+                ORDER BY c.score DESC LIMIT 10
                 """
-            )
+            ),
+            {
+                "excluded": list(row.get("excluded_config_ids") or []),
+                "operator": row.get("operator_code") or "__none__",
+            },
         )
         configs_rows = [dict(item) for item in result.mappings().all()]
-    plaintext = [
-        request.app.state.cipher.decrypt(str(item["uri_enc"]), aad=b"subio:config:v1")["uri"]
-        for item in configs_rows
-    ]
+    plaintext = []
+    for item in configs_rows:
+        uri = request.app.state.cipher.decrypt(str(item["uri_enc"]), aad=b"subio:config:v1")["uri"]
+        if item.get("display_name"):
+            uri = with_display_name(uri, str(item["display_name"]))
+        plaintext.append(uri)
     return PlainTextResponse("\n".join(plaintext), headers={"Cache-Control": "no-store"})
 
 
@@ -701,6 +722,21 @@ async def delete_panel(panel_id: UUID, request: Request) -> dict[str, str]:
 @app.get("/admin/configs/public", dependencies=[Depends(require_admin)])
 async def public_configs_admin(request: Request) -> list[dict[str, Any]]:
     return await request.app.state.distribution.top_configs()
+
+
+@app.get("/admin/pipeline/events", dependencies=[Depends(require_admin)])
+async def pipeline_events_admin(
+    request: Request,
+    limit: int = 100,
+    config_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Live, chronological feed of every stage a config passed through —
+    ingestion, dispatch to Iran, country resolution, test result, and the
+    resulting promote/demote decision. Powers the admin panel's live log."""
+    events: PipelineEventService = request.app.state.pipeline_events
+    if config_id:
+        return await events.for_config(config_id, limit=limit)
+    return await events.recent(limit=limit)
 
 
 @app.get("/admin/messages/{key}", dependencies=[Depends(require_admin)])

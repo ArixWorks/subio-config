@@ -5,6 +5,7 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.services.emoji_service import EmojiService
+from app.telegram_ui.texts import OPERATOR_CHOICES, OPERATOR_OTHER_CODE
 
 
 async def main_menu(emoji: EmojiService) -> InlineKeyboardMarkup:
@@ -59,11 +60,58 @@ async def public_actions(emoji: EmojiService, url: str) -> InlineKeyboardMarkup:
                 )
             ],
             [
+                await emoji.button("qrcode", "دریافت QR کد", "public:qr"),
+                await emoji.button("change_link", "تعویض لینک", "public:change"),
+            ],
+            [
+                await emoji.button("operator", "تغییر اپراتور", "public:operator"),
+                await emoji.button(
+                    "report", "گزارش مشکل", "report:start:public", color_key="btn_color_danger"
+                ),
+            ],
+            [
                 await emoji.button("refresh", "به‌روزرسانی وضعیت", "public:home"),
                 await emoji.button("back", "منوی اصلی", "menu:home"),
             ],
         ]
     )
+
+
+async def change_link_confirm(emoji: EmojiService) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                await emoji.button(
+                    "change_link",
+                    "بله، لینک جدید بساز",
+                    "public:change:confirm",
+                    color_key="btn_color_danger",
+                )
+            ],
+            [await emoji.button("back", "انصراف", "public:home")],
+        ]
+    )
+
+
+async def qr_result(emoji: EmojiService) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[await emoji.button("back", "بازگشت به ساب عمومی", "public:home")]]
+    )
+
+
+async def operator_choices(
+    emoji: EmojiService, *, back_target: str = "public:home"
+) -> InlineKeyboardMarkup:
+    buttons = [
+        InlineKeyboardButton(text=label, callback_data=f"operator:select:{code}")
+        for code, label in OPERATOR_CHOICES
+    ]
+    rows = [buttons[index : index + 2] for index in range(0, len(buttons), 2)]
+    rows.append(
+        [InlineKeyboardButton(text="سایر (تایپ می‌کنم)", callback_data=f"operator:select:{OPERATOR_OTHER_CODE}")]
+    )
+    rows.append([await emoji.button("back", "بازگشت", back_target)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def public_retry(emoji: EmojiService) -> InlineKeyboardMarkup:

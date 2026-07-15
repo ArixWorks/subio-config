@@ -2,19 +2,18 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import logging
 import uuid
 from typing import Any, Literal
 from urllib.parse import urlsplit
 
-from app.ai.gateway import get_gateway
-from app.ai.naming import suggest_display_name
 from app.communication import CommunicationUnavailable, ResilientTesterClient
 from app.config import get_settings
 from app.db import Database
 from app.security import PayloadCipher
+from app.services.geoip_service import GeoIpService
+from app.services.pipeline_events import PipelineEventService
 from app.services.scoring_service import compute_health_score, format_config_name
 from app.services.scanner_settings_service import ScannerSettingsService
 
@@ -30,11 +29,15 @@ class ConfigTesterService:
         tester: ResilientTesterClient,
         cipher: PayloadCipher,
         scanner_settings: ScannerSettingsService | None = None,
+        geoip: GeoIpService | None = None,
+        pipeline_events: PipelineEventService | None = None,
     ) -> None:
         self._db = db
         self._tester = tester
         self._cipher = cipher
         self._scanner_settings = scanner_settings
+        self._geoip = geoip or GeoIpService()
+        self._events = pipeline_events or PipelineEventService(db)
 
     async def queue_untested_public_configs(self, limit: int = 20) -> int:
         if self._scanner_settings is None:
@@ -224,6 +227,13 @@ class ConfigTesterService:
             """,
             {"id": job_id, "config_id": config_id, "payload": envelope},
         )
+        if config_id:
+            await self._events.emit(
+                stage="dispatched",
+                status="info",
+                config_id=config_id,
+                message=f"ارسال به سرور ایران برای تست ({purpose}/{mode})",
+            )
         try:
             result = await self._tester.test(
                 {"config_uri": uri, "protocol": protocol, "mode": mode}
@@ -233,6 +243,13 @@ class ConfigTesterService:
                 "UPDATE test_jobs SET status='failed', error_code='tester_unavailable' WHERE id=:id",
                 {"id": job_id},
             )
+            if config_id:
+                await self._events.emit(
+                    stage="dispatched",
+                    status="error",
+                    config_id=config_id,
+                    message="ارتباط با سرور ایران برقرار نشد",
+                )
             raise
         score = float(result.get("health_score") or compute_health_score(result))
         reachable = bool(result.get("reachable"))
@@ -286,29 +303,43 @@ class ConfigTesterService:
         demote_on_first_fail: bool,
     ) -> None:
         transport = self._detect_transport(uri)
-        location = self._guess_location(uri)
-        conf_num = int(hashlib.sha256(uri.encode()).hexdigest(), 16) % 10000
-        display = format_config_name(
-            config_id=conf_num,
-            location=location,
-            protocol=protocol,
-            latency_ms=result.get("latency_ms"),
-            score=score,
-            transport=transport,
+        identity_row = await self._db.fetch_one(
+            "SELECT config_code, country_code FROM vpn_configs WHERE id=:id",
+            {"id": config_id},
         )
-        if mode == "full" and reachable and score >= 50:
-            try:
-                display = await suggest_display_name(
-                    get_gateway(),
-                    protocol=protocol,
-                    transport=transport,
-                    location=location,
-                    latency_ms=result.get("latency_ms"),
-                    score=score,
-                    config_id=conf_num,
-                )
-            except Exception:
-                logger.exception("ai_naming_failed")
+        config_code = str((identity_row or {}).get("config_code") or "")
+        country_code = (identity_row or {}).get("country_code")
+
+        # Country is resolved once (cheap probes reuse whatever was already
+        # stored) and persisted, since a config's endpoint IP does not move.
+        if not country_code:
+            country_code = await self._geoip.resolve_country(uri)
+            await self._db.execute(
+                "UPDATE vpn_configs SET country_code=:country WHERE id=:id",
+                {"country": country_code, "id": config_id},
+            )
+            await self._events.emit(
+                stage="country_resolved",
+                status="info",
+                config_id=config_id,
+                config_code=config_code,
+                message=f"کشور شناسایی شد: {country_code}",
+            )
+
+        display = format_config_name(
+            config_code=config_code,
+            country_code=str(country_code),
+            score=score,
+        )
+
+        await self._events.emit(
+            stage="tested",
+            status="success" if reachable else "warning",
+            config_id=config_id,
+            config_code=config_code,
+            message=f"نتیجه تست ({purpose}/{mode}): {'سالم' if reachable else 'ناموفق'} — امتیاز {score:.0f}",
+            metadata={"mode": mode, "purpose": purpose, "reachable": reachable, "score": score},
+        )
 
         # A failure candidate: this probe found the config unreachable.
         is_healthy_retest = purpose.startswith("retest_healthy")
@@ -359,14 +390,26 @@ class ConfigTesterService:
                         )
                     ).mappings().first()
                 if updated is not None:
+                    demoted = not updated["is_enabled"]
                     logger.info(
-                        "config_demoted" if not updated["is_enabled"] else "config_demote_deferred",
+                        "config_demoted" if demoted else "config_demote_deferred",
                         extra={
                             "id": config_id,
                             "purpose": purpose,
                             "mode": mode,
                             "consecutive_failures": updated["consecutive_failures"],
                         },
+                    )
+                    await self._events.emit(
+                        stage="demoted" if demoted else "demote_deferred",
+                        status="error" if demoted else "warning",
+                        config_id=config_id,
+                        config_code=config_code,
+                        message=(
+                            f"کانفیگ غیرفعال شد (شکست پیاپی #{updated['consecutive_failures']})"
+                            if demoted
+                            else f"شکست {updated['consecutive_failures']} — هنوز فعال است"
+                        ),
                     )
                 return
 
@@ -391,6 +434,13 @@ class ConfigTesterService:
                 },
             )
             logger.info("config_demoted", extra={"id": config_id, "purpose": purpose, "mode": mode})
+            await self._events.emit(
+                stage="demoted",
+                status="error",
+                config_id=config_id,
+                config_code=config_code,
+                message="کانفیگ غیرفعال شد",
+            )
             return
 
         if promote:
@@ -411,6 +461,13 @@ class ConfigTesterService:
                 },
             )
             logger.info("config_promoted", extra={"id": config_id, "purpose": purpose})
+            await self._events.emit(
+                stage="promoted",
+                status="success",
+                config_id=config_id,
+                config_code=config_code,
+                message=f"کانفیگ سالم و فعال شد: {display}",
+            )
             return
 
         # Cheap OK on already-healthy: refresh latency without rewriting speed semantics.
@@ -479,14 +536,3 @@ class ConfigTesterService:
         if "type=grpc" in query:
             return "GRPC"
         return urlsplit(uri).scheme.upper()
-
-    @staticmethod
-    def _guess_location(uri: str) -> str:
-        host = (urlsplit(uri).hostname or "").lower()
-        if any(token in host for token in ("us", "usa", "america")):
-            return "US"
-        if any(token in host for token in ("tr", "tur", "istanbul")):
-            return "TR"
-        if any(token in host for token in ("de", "ger", "frankfurt")):
-            return "DE"
-        return "DE"

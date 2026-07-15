@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote, urlsplit, urlunsplit
 
+from app.services.panel_service import country_flag
+
+BOT_DISPLAY_HANDLE = "@Config_SubBOT"
+TOP_SCORE_STAR_THRESHOLD = 85.0
 
 SITE_WEIGHTS = {
     "instagram": 15,
@@ -54,15 +59,35 @@ def apply_operator_reports(
 
 def format_config_name(
     *,
-    config_id: int,
-    location: str,
-    protocol: str,
-    latency_ms: int | None,
+    config_code: str,
+    country_code: str,
     score: float,
-    transport: str | None = None,
 ) -> str:
-    flag = {"DE": "🇩🇪", "US": "🇺🇸", "TR": "🇹🇷", "NL": "🇳🇱"}.get(location.upper(), "🌍")
-    latency = f"{latency_ms}ms" if latency_ms else "—"
-    transport_label = transport or protocol.upper()
-    stars = "★" if score >= 90 else "☆"
-    return f"{flag} SubIO #{config_id} | {transport_label} | {latency} | {stars}{int(score)}"
+    """Renders the public, user-facing config label.
+
+    Format: "{flag}[⭐] {BOT_DISPLAY_HANDLE} #{COUNTRY}{CODE}", e.g.
+    "🇮🇹 @Config_SubBOT #IT454" or "🇮🇹⭐ @Config_SubBOT #IT454" once the
+    config's score crosses TOP_SCORE_STAR_THRESHOLD. config_code is the
+    stable numeric suffix allocated once per row (see migration 006); the
+    country prefix is recomputed on every naming pass so a later, more
+    accurate GeoIP resolution is reflected without changing the reportable
+    code itself.
+    """
+    country = country_code.upper() if len(country_code) == 2 else "XX"
+    flag = country_flag(country)
+    star = "⭐" if score >= TOP_SCORE_STAR_THRESHOLD else ""
+    code = f"{country}{config_code}"
+    return f"{flag}{star} {BOT_DISPLAY_HANDLE} #{code}"
+
+
+def with_display_name(uri: str, display_name: str) -> str:
+    """Overwrites a config URI's fragment (the "#remark" every VPN client
+    renders as the entry's visible name) with the SubIO display name.
+
+    Client apps (v2rayNG, NekoBox, Shadowrocket, ...) all read the URI
+    fragment as the human-facing label, so this is what actually surfaces
+    "🇮🇹 @Config_SubBOT #IT454" inside the user's VPN app — not just the bot
+    UI — which is what makes the reportable #CODE usable in practice.
+    """
+    parts = urlsplit(uri)
+    return urlunsplit(parts._replace(fragment=quote(display_name, safe="")))

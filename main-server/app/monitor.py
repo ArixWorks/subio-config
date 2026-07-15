@@ -15,6 +15,7 @@ from app.config import get_settings
 from app.db import Database
 from app.logging import configure_logging
 from app.security import PayloadCipher
+from app.services.pipeline_events import PipelineEventService
 from app.services.scanner_pipeline import extract_configs_from_event
 from app.services.scanner_settings_service import ScannerSettingsService
 from app.telethon_utils import create_client
@@ -28,6 +29,7 @@ async def store_configs(
     cipher: PayloadCipher,
     uris: set[str],
     source: str,
+    events: PipelineEventService,
 ) -> int:
     stored = 0
     gateway = get_gateway()
@@ -46,20 +48,37 @@ async def store_configs(
         protocol = urlsplit(uri).scheme.lower() or "unknown"
         fingerprint = hashlib.sha256(uri.encode()).hexdigest()
         encrypted = cipher.encrypt({"uri": uri}, aad=b"subio:config:v1")
-        await db.execute(
-            """
-            INSERT INTO vpn_configs(scope, protocol, fingerprint, uri_enc, score, source_chat)
-            VALUES ('public', :protocol, :fingerprint, :uri_enc, 25, :source)
-            ON CONFLICT (fingerprint) DO NOTHING
-            """,
-            {
-                "protocol": protocol,
-                "fingerprint": fingerprint,
-                "uri_enc": encrypted,
-                "source": source,
-            },
-        )
+        async with db.connection() as conn:
+            from sqlalchemy import text as sql_text
+
+            row = (
+                await conn.execute(
+                    sql_text(
+                        """
+                        INSERT INTO vpn_configs(scope, protocol, fingerprint, uri_enc, score, source_chat)
+                        VALUES ('public', :protocol, :fingerprint, :uri_enc, 25, :source)
+                        ON CONFLICT (fingerprint) DO NOTHING
+                        RETURNING id::text AS id, config_code
+                        """
+                    ),
+                    {
+                        "protocol": protocol,
+                        "fingerprint": fingerprint,
+                        "uri_enc": encrypted,
+                        "source": source,
+                    },
+                )
+            ).mappings().first()
         stored += 1
+        if row is not None:
+            await events.emit(
+                stage="ingested",
+                status="info",
+                config_id=str(row["id"]),
+                config_code=row.get("config_code"),
+                message=f"کانفیگ جدید از {source} دریافت شد",
+                metadata={"protocol": protocol, "source": source},
+            )
     return stored
 
 
@@ -83,6 +102,7 @@ async def main() -> None:
     cache = Redis.from_url(settings.redis_url, decode_responses=True)
     scanner_settings = ScannerSettingsService(db, cache)
     cipher = PayloadCipher(settings.payload_encryption_key)
+    pipeline_events = PipelineEventService(db)
     client = create_client(settings)
     allowlist = set(settings.source_chats)
 
@@ -124,7 +144,7 @@ async def main() -> None:
 
         if not uris:
             return
-        count = await store_configs(db, cipher, uris, source)
+        count = await store_configs(db, cipher, uris, source, pipeline_events)
         logger.info(
             "configs_stored",
             extra={"source": source, "count": count, "uris": len(uris)},

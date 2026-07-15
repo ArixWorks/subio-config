@@ -21,6 +21,7 @@ from app.services.config_tester import ConfigTesterService
 from app.services.distribution_service import DistributionService
 from app.services.forced_channel_service import ForcedChannelService
 from app.services.panel_service import PanelService
+from app.services.pipeline_events import PipelineEventService
 from app.services.socks_service import SocksService
 from app.services.scanner_settings_service import ScannerSettingsService
 from app.services.subscription_service import SubscriptionService
@@ -60,7 +61,10 @@ async def startup(ctx: dict[str, Any]) -> None:
     ctx["comm"] = CommunicationManager(db, tester)
     ctx["redis"] = Redis.from_url(settings.redis_url, decode_responses=True)
     ctx["scanner_settings"] = ScannerSettingsService(db, ctx["redis"])
-    ctx["config_tester"] = ConfigTesterService(db, tester, cipher, ctx["scanner_settings"])
+    ctx["pipeline_events"] = PipelineEventService(db)
+    ctx["config_tester"] = ConfigTesterService(
+        db, tester, cipher, ctx["scanner_settings"], pipeline_events=ctx["pipeline_events"]
+    )
     ctx["distribution"] = DistributionService(db)
     ctx["panels"] = PanelService(db, cipher)
     ctx["channels"] = ForcedChannelService(db, ctx["redis"], ctx["panels"])
@@ -109,6 +113,9 @@ async def cleanup(ctx: dict[str, Any]) -> None:
         )
         await connection.execute(
             text("DELETE FROM comm_switch_logs WHERE created_at < now() - interval '90 days'")
+        )
+        await connection.execute(
+            text("DELETE FROM pipeline_events WHERE created_at < now() - interval '14 days'")
         )
 
 

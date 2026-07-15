@@ -76,12 +76,59 @@ class SubscriptionService:
             {"user_id": user_id},
         )
         row = await self._db.fetch_one(
-            "SELECT token, created_at FROM public_feeds WHERE user_id=:user_id",
+            "SELECT token, operator_code, created_at FROM public_feeds WHERE user_id=:user_id",
             {"user_id": user_id},
         )
         if row is None:
             raise RuntimeError("failed to create public feed")
         return row
+
+    async def rotate_public_feed_token(self, user_id: int) -> dict[str, Any]:
+        """Invalidates the user's current public-sub link and mints a new
+        one. The old token row is deleted outright (not just deactivated) so
+        it can never be resurrected or looked up again — satisfying "the old
+        one should be deleted" from a user who published their link publicly
+        and wants it to stop working immediately."""
+        async with self._db.connection() as connection:
+            from sqlalchemy import text
+
+            await connection.execute(
+                text("DELETE FROM public_feeds WHERE user_id=:user_id"),
+                {"user_id": user_id},
+            )
+            result = await connection.execute(
+                text(
+                    """
+                    INSERT INTO public_feeds(user_id)
+                    VALUES (:user_id)
+                    RETURNING token, operator_code, created_at
+                    """
+                ),
+                {"user_id": user_id},
+            )
+            row = result.mappings().first()
+        if row is None:
+            raise RuntimeError("failed to rotate public feed")
+        return dict(row)
+
+    async def set_public_feed_operator(
+        self, user_id: int, operator_code: str, operator_label: str
+    ) -> None:
+        await self._db.execute(
+            """
+            UPDATE public_feeds SET operator_code=:operator, updated_at=now()
+            WHERE user_id=:user_id
+            """,
+            {"operator": operator_code, "user_id": user_id},
+        )
+        await self._db.execute(
+            """
+            UPDATE users
+            SET operator_code=:operator, operator_label=:label, operator_selected_at=now()
+            WHERE telegram_id=:user_id
+            """,
+            {"operator": operator_code, "label": operator_label, "user_id": user_id},
+        )
 
     async def create_daily_subscription(
         self, user_id: int, location_code: str = "DE"

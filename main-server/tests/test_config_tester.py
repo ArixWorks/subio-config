@@ -52,6 +52,9 @@ class _FakeDatabase:
     async def execute(self, statement: str, values: dict[str, Any] | None = None) -> None:
         self.executed.append((statement, values))
 
+    async def fetch_one(self, statement: str, values: dict[str, Any] | None = None) -> dict[str, Any]:
+        return {"config_code": "1", "country_code": "DE"}
+
 
 def _cipher() -> PayloadCipher:
     return PayloadCipher(base64.urlsafe_b64encode(os.urandom(32)).decode())
@@ -147,6 +150,9 @@ class _FakeTransitionDatabase:
     async def execute(self, *_args: Any, **_kwargs: Any) -> None:
         return None
 
+    async def fetch_one(self, *_args: Any, **_kwargs: Any) -> dict[str, Any]:
+        return {"config_code": "1", "country_code": "DE"}
+
 
 @pytest.mark.asyncio
 async def test_retest_healthy_failure_does_not_demote_before_threshold(monkeypatch) -> None:
@@ -212,7 +218,20 @@ async def test_discovery_failure_still_demotes_immediately(monkeypatch) -> None:
         async def execute(self, statement: str, values: dict[str, Any] | None = None) -> None:
             executed.append((statement, values))
 
-    service = ConfigTesterService(_Database(), tester=None, cipher=_cipher(), scanner_settings=None)  # type: ignore[arg-type]
+        async def fetch_one(self, statement: str, values: dict[str, Any] | None = None) -> dict[str, Any]:
+            return {"config_code": "2", "country_code": "DE"}
+
+    class _NullEvents:
+        async def emit(self, **_kwargs: Any) -> None:
+            return None
+
+    service = ConfigTesterService(
+        _Database(),
+        tester=None,
+        cipher=_cipher(),
+        scanner_settings=None,
+        pipeline_events=_NullEvents(),  # type: ignore[arg-type]
+    )  # type: ignore[arg-type]
 
     await service._apply_pool_transition(
         config_id="cfg-2",

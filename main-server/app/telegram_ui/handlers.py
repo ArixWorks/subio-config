@@ -13,15 +13,22 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import CallbackQuery, ErrorEvent, InlineKeyboardMarkup, Message
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    ErrorEvent,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from app.ai.admin_assistant import admin_assist
 from app.ai.gateway import get_gateway
-from app.ai.reports import infer_operator_report
+from app.ai.reports import infer_config_report, infer_operator_report
 from app.communication import CommunicationUnavailable
 from app.formatting import format_bytes, format_expiry, format_volume_pair
-from app.services.forced_channel_service import VERIFY_CALLBACK
 from app.services.panel_service import DAILY_BASE_BYTES, next_tehran_midnight
+from app.services.forced_channel_service import VERIFY_CALLBACK
+from app.services.qr_service import generate_branded_qr
 from app.telegram_ui import keyboards, texts
 from app.telegram_ui.context import BotServices
 
@@ -34,6 +41,11 @@ CUSTOM_EMOJI_TAG = re.compile(
 
 class ReportFlow(StatesGroup):
     waiting_for_detail = State()
+    waiting_for_public_detail = State()
+
+
+class OperatorFlow(StatesGroup):
+    waiting_for_custom_name = State()
 
 
 def _telegram_fallback(
@@ -212,6 +224,20 @@ async def public_home(query: CallbackQuery, services: BotServices) -> None:
         query.from_user.id, query.from_user.username, "fa"
     )
     feed = await services.subscriptions.get_or_create_public_feed(query.from_user.id)
+    if not feed.get("operator_code"):
+        # First-ever entry into the public-sub section: the operator must be
+        # known before a feed is ever synced, so operator-aware filtering
+        # (config_operator_exclusions) applies from the very first link the
+        # user receives instead of only from their second visit onward.
+        rendered = await services.emoji.render_html(
+            "operator", texts.OPERATOR_PROMPT, fallback="📶"
+        )
+        await _edit_or_answer(
+            query.message,
+            rendered,
+            reply_markup=await keyboards.operator_choices(services.emoji),
+        )
+        return
     token = str(feed["token"])
     count_row = await services.db.fetch_one(
         """
@@ -276,6 +302,235 @@ async def public_home(query: CallbackQuery, services: BotServices) -> None:
         rendered,
         reply_markup=await keyboards.public_actions(services.emoji, url),
     )
+
+
+@router.callback_query(F.data == "public:operator")
+async def public_operator_prompt(query: CallbackQuery, services: BotServices) -> None:
+    await query.answer()
+    if query.message is None:
+        return
+    rendered = await services.emoji.render_html(
+        "operator", texts.OPERATOR_PROMPT, fallback="📶"
+    )
+    await _edit_or_answer(
+        query.message,
+        rendered,
+        reply_markup=await keyboards.operator_choices(services.emoji, back_target="public:home"),
+    )
+
+
+@router.callback_query(F.data.startswith("operator:select:"))
+async def operator_select(
+    query: CallbackQuery, services: BotServices, state: FSMContext
+) -> None:
+    if query.from_user is None or query.message is None or not query.data:
+        await query.answer()
+        return
+    code = query.data.rsplit(":", 1)[-1]
+    if code == texts.OPERATOR_OTHER_CODE:
+        await query.answer()
+        await state.set_state(OperatorFlow.waiting_for_custom_name)
+        rendered = await services.emoji.render_html(
+            "operator", texts.OPERATOR_OTHER_PROMPT, fallback="📶"
+        )
+        await _edit_or_answer(
+            query.message,
+            rendered,
+            reply_markup=await keyboards.back_menu(services.emoji),
+        )
+        return
+    label = texts.OPERATOR_LABELS.get(code, code)
+    await services.subscriptions.get_or_create_public_feed(query.from_user.id)
+    await services.subscriptions.set_public_feed_operator(query.from_user.id, code, label)
+    await query.answer(texts.OPERATOR_SAVED.format(label=label))
+    await public_home(query, services)
+
+
+@router.message(OperatorFlow.waiting_for_custom_name, F.text)
+async def operator_custom_name(
+    message: Message, services: BotServices, state: FSMContext
+) -> None:
+    if message.from_user is None or not message.text:
+        return
+    label = message.text.strip()
+    if not 2 <= len(label) <= 64:
+        await message.answer("نام اپراتور باید بین ۲ تا ۶۴ نویسه باشد.")
+        return
+    code = f"{texts.OPERATOR_OTHER_CODE}:{label}"[:64]
+    await services.subscriptions.get_or_create_public_feed(message.from_user.id)
+    await services.subscriptions.set_public_feed_operator(message.from_user.id, code, label)
+    await state.clear()
+    await message.answer(
+        texts.OPERATOR_SAVED.format(label=escape(label)),
+        parse_mode="HTML",
+        reply_markup=await keyboards.back_menu(services.emoji),
+    )
+
+
+@router.message(OperatorFlow.waiting_for_custom_name)
+async def operator_custom_name_non_text(message: Message) -> None:
+    await message.answer("لطفاً نام اپراتور را فقط به‌صورت پیام متنی ارسال کنید.")
+
+
+@router.callback_query(F.data == "public:change")
+async def public_change_link_confirm(query: CallbackQuery, services: BotServices) -> None:
+    await query.answer()
+    if query.message is None:
+        return
+    rendered = await services.emoji.render_html(
+        "change_link", texts.CHANGE_LINK_CONFIRM, fallback="♻️"
+    )
+    await _edit_or_answer(
+        query.message,
+        rendered,
+        reply_markup=await keyboards.change_link_confirm(services.emoji),
+    )
+
+
+@router.callback_query(F.data == "public:change:confirm")
+async def public_change_link_do(query: CallbackQuery, services: BotServices) -> None:
+    if query.from_user is None or query.message is None:
+        await query.answer()
+        return
+    lock_key = f"bot:public-change:{query.from_user.id}"
+    if not await services.redis.set(lock_key, "1", ex=15, nx=True):
+        await query.answer("درخواست قبلی هنوز در حال انجام است.", show_alert=True)
+        return
+    await query.answer("در حال ساخت لینک جدید...")
+    try:
+        await services.subscriptions.rotate_public_feed_token(query.from_user.id)
+    finally:
+        await services.redis.delete(lock_key)
+    await query.answer(texts.CHANGE_LINK_DONE)
+    await public_home(query, services)
+
+
+@router.callback_query(F.data == "public:qr")
+async def public_qr(query: CallbackQuery, services: BotServices) -> None:
+    if query.from_user is None or query.message is None:
+        await query.answer()
+        return
+    await query.answer("در حال ساخت QR کد...")
+    feed = await services.subscriptions.get_or_create_public_feed(query.from_user.id)
+    url = await services.subscriptions.subscription_url(
+        feed["token"], str(services.settings.public_base_url)
+    )
+    try:
+        qr = generate_branded_qr(url)
+    except Exception:
+        logger.exception("qr_generation_failed", extra={"user_id": query.from_user.id})
+        await query.answer("ساخت QR کد با خطا مواجه شد.", show_alert=True)
+        return
+    photo = BufferedInputFile(qr.png_bytes, filename="subio-qr.png")
+    await query.message.answer_photo(
+        photo,
+        caption=texts.QR_CAPTION,
+        reply_markup=await keyboards.qr_result(services.emoji),
+    )
+
+
+@router.callback_query(F.data == "report:start:public")
+async def public_report_start(
+    query: CallbackQuery, services: BotServices, state: FSMContext
+) -> None:
+    if not isinstance(query.message, Message):
+        await query.answer(
+            "این پیام دیگر قابل استفاده نیست؛ /menu را ارسال کنید.",
+            show_alert=True,
+        )
+        return
+    await query.answer()
+    await state.set_state(ReportFlow.waiting_for_public_detail)
+    body = (
+        "<b>گزارش مشکل کانفیگ ساب عمومی</b>\n\n"
+        "کد کانفیگ (مثلاً <code>#IT454</code>) و توضیح مشکل را در یک پیام بنویسید؛ "
+        "فارسی، انگلیسی یا فینگلیش، هر کدام مشکلی ندارد. برای نمونه:\n"
+        "<blockquote>Config #IT454 roy irancell kar nemikone</blockquote>\n\n"
+        "برای لغو، دکمه بازگشت یا دستور /cancel را بزنید."
+    )
+    rendered = await services.emoji.render_html("report", body, fallback="🚨")
+    await _edit_or_answer(
+        query.message,
+        rendered,
+        reply_markup=await keyboards.back_menu(services.emoji),
+    )
+
+
+@router.message(ReportFlow.waiting_for_public_detail, F.text)
+async def public_report_detail(
+    message: Message, services: BotServices, state: FSMContext
+) -> None:
+    if message.from_user is None or not message.text:
+        return
+    detail = message.text.strip()
+    if not 4 <= len(detail) <= 500:
+        await message.answer("توضیح مشکل باید بین ۴ تا ۵۰۰ نویسه باشد.")
+        return
+    inferred = await infer_config_report(get_gateway(), detail)
+    config_code = inferred.get("config_code")
+    if not config_code:
+        not_found = await services.messages.get(
+            "config_report_not_found",
+            texts.OPERATOR_PROMPT,
+        )
+        await message.answer(not_found)
+        return
+    config = await services.reports.find_config_by_code(str(config_code))
+    if config is None:
+        not_found = await services.messages.get(
+            "config_report_not_found",
+            "کد کانفیگ پیدا نشد. کد داخل نام کانفیگ، بعد از # نوشته شده است؛ مثلاً #IT454.",
+        )
+        await message.answer(not_found)
+        return
+
+    feed_row = await services.db.fetch_one(
+        "SELECT operator_code FROM public_feeds WHERE user_id=:user_id",
+        {"user_id": message.from_user.id},
+    )
+    operator_code = str((feed_row or {}).get("operator_code") or inferred.get("operator") or "unknown")
+
+    await state.clear()
+    outcome = await services.reports.submit_report(
+        config_id=str(config["id"]),
+        reporter_user_id=message.from_user.id,
+        operator_code=operator_code,
+        detail=str(inferred.get("summary") or detail)[:500],
+    )
+    # Force-replace this specific user's copy of the reported config
+    # immediately, regardless of whether the operator/global threshold was
+    # crossed yet — satisfies "replace it for that specific user" even on a
+    # single first-time report.
+    await services.reports.mark_user_feed_replacement(
+        user_id=message.from_user.id, config_id=str(config["id"])
+    )
+    token_row = await services.db.fetch_one(
+        "SELECT token::text AS token FROM public_feeds WHERE user_id=:user_id",
+        {"user_id": message.from_user.id},
+    )
+    reply_markup = await keyboards.back_menu(services.emoji)
+    if token_row:
+        try:
+            async with asyncio.timeout(10):
+                await services.subscription_sync.sync_token(str(token_row["token"]))
+        except Exception:
+            logger.exception(
+                "public_report_resync_failed", extra={"user_id": message.from_user.id}
+            )
+        url = await services.subscriptions.subscription_url(
+            token_row["token"], str(services.settings.public_base_url)
+        )
+        reply_markup = await keyboards.public_actions(services.emoji, url)
+    await message.answer(
+        texts.REPORT_SUBMITTED_WITH_CODE.format(code=escape(str(config_code))),
+        parse_mode="HTML",
+        reply_markup=reply_markup,
+    )
+
+
+@router.message(ReportFlow.waiting_for_public_detail)
+async def public_report_non_text(message: Message) -> None:
+    await message.answer("لطفاً مشکل را فقط به‌صورت پیام متنی ارسال کنید.")
 
 
 @router.callback_query(F.data == "private:locations")

@@ -23,13 +23,14 @@ class DistributionService:
                     text(
                         """
                         SELECT c.id, c.protocol, c.score, c.latency_ms, c.display_name,
-                               c.transport_type, c.operator_scores,
+                               c.transport_type, c.operator_scores, c.config_code, c.country_code,
                                COUNT(r.id) FILTER (WHERE r.category='blocked') AS blocked_reports,
                                COUNT(r.id) FILTER (WHERE r.category='slow') AS slow_reports,
                                COUNT(r.id) FILTER (WHERE r.category='disconnect') AS disconnect_reports
                         FROM vpn_configs c
                         LEFT JOIN user_reports r ON r.config_id = c.id AND r.status='pending'
                         WHERE c.scope='public' AND c.is_enabled AND c.score >= 50
+                          AND NOT c.is_globally_blocked
                           AND (c.expires_at IS NULL OR c.expires_at > now())
                         GROUP BY c.id
                         ORDER BY c.score DESC, c.latency_ms ASC NULLS LAST
@@ -40,7 +41,7 @@ class DistributionService:
             ).mappings().all()
 
         ranked: list[dict[str, Any]] = []
-        for index, row in enumerate(rows, start=1):
+        for row in rows:
             operator_scores = row.get("operator_scores") or {}
             base = float(operator_scores.get(operator, row["score"]))
             adjusted = apply_operator_reports(
@@ -52,20 +53,15 @@ class DistributionService:
                     "disconnect": int(row["disconnect_reports"] or 0),
                 },
             )
-            location = "DE"
-            if row.get("display_name") and "🇺🇸" in str(row["display_name"]):
-                location = "US"
-            name = row.get("display_name") or format_config_name(
-                config_id=index,
-                location=location,
-                protocol=str(row["protocol"]),
-                latency_ms=row.get("latency_ms"),
+            name = format_config_name(
+                config_code=str(row.get("config_code") or ""),
+                country_code=str(row.get("country_code") or "XX"),
                 score=adjusted,
-                transport=row.get("transport_type"),
             )
             ranked.append(
                 {
                     "id": str(row["id"]),
+                    "config_code": row.get("config_code"),
                     "name": name,
                     "score": adjusted,
                     "latency_ms": row.get("latency_ms"),

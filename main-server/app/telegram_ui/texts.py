@@ -70,3 +70,46 @@ REPORT_CATEGORIES = {
     "disconnect": "قطعی",
     "other": "سایر",
 }
+
+# Canonical operator keyboard shown once, on first entry into the public-sub
+# section. Codes are the stable keys stored on users.operator_code and later
+# matched against config_operator_exclusions/config_reports.operator_code.
+OPERATOR_CHOICES: list[tuple[str, str]] = [
+    ("mci", "همراه اول"),
+    ("irancell", "ایرانسل"),
+    ("rightel", "رایتل"),
+    ("shatel_mobile", "شاتل موبایل"),
+    ("aptel", "آپتل"),
+    ("samantel", "سامانتل"),
+]
+OPERATOR_OTHER_CODE = "other"
+OPERATOR_LABELS: dict[str, str] = {code: label for code, label in OPERATOR_CHOICES}
+OPERATOR_LABELS[OPERATOR_OTHER_CODE] = "سایر"
+
+OPERATOR_PROMPT = """<b>انتخاب اپراتور موبایل</b>
+
+برای دریافت کانفیگ‌هایی که روی اپراتور شما بهتر کار می‌کنند، لطفاً اپراتور موبایل خود را انتخاب کنید.
+
+اگر اپراتور شما در لیست نیست، روی «سایر» بزنید و نام آن را تایپ کنید."""
+
+OPERATOR_OTHER_PROMPT = """نام اپراتور خود را در یک پیام کوتاه بنویسید؛ برای نمونه:
+<blockquote>میزبان داده شرق</blockquote>"""
+
+OPERATOR_SAVED = "اپراتور شما با موفقیت ثبت شد: <b>{label}</b>"
+
+CHANGE_LINK_CONFIRM = """<b>تعویض لینک ساب عمومی</b>
+
+با تأیید، لینک فعلی شما برای همیشه غیرفعال می‌شود و یک لینک جدید و اختصاصی برای شما ساخته می‌شود.
+اگر لینک قبلی را جایی منتشر کرده‌اید، پس از تعویض دیگر برای هیچ‌کس کار نخواهد کرد."""
+
+CHANGE_LINK_DONE = "لینک ساب عمومی شما با موفقیت تغییر کرد."
+
+QR_CAPTION = "کیو‌آر کد لینک اختصاصی ساب عمومی شما؛ برای اتصال سریع، آن را با اپلیکیشن V2Ray اسکن کنید."
+
+REPORT_CONFIG_NOT_LINKED = (
+    "کد کانفیگ پیدا شد اما داخل لینک ساب فعلی شما نیست؛ گزارش شما به‌صورت عمومی ثبت شد."
+)
+
+REPORT_SUBMITTED_WITH_CODE = (
+    "گزارش شما برای کانفیگ <b>#{code}</b> ثبت شد و به‌زودی یک کانفیگ جدید جایگزین آن در لینک شما می‌شود."
+)

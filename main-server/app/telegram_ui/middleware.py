@@ -13,6 +13,12 @@ from app.telegram_ui.context import BotServices
 
 Handler = Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]]
 
+# Callbacks that lead into a multi-step FSM flow (the next update from this
+# user is expected to be a free-text message, e.g. the report detail or a
+# custom operator name) must not have their state wiped by this middleware —
+# the state is set by the handler itself right after this runs.
+_STATE_PRESERVING_PREFIXES = ("report:start", "operator:select:other")
+
 
 class ClearNavigationStateMiddleware(BaseMiddleware):
     async def __call__(
@@ -29,7 +35,8 @@ class ClearNavigationStateMiddleware(BaseMiddleware):
                     event.from_user.username,
                     "fa",
                 )
-            if event.data != "report:start":
+            callback_data = event.data or ""
+            if not any(callback_data.startswith(prefix) for prefix in _STATE_PRESERVING_PREFIXES):
                 state = data.get("state")
                 if isinstance(state, FSMContext):
                     await state.clear()

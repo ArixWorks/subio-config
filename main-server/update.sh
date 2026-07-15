@@ -76,7 +76,7 @@ done
 
 if [[ -d migrations ]]; then
   info "Applying migrations..."
-  for f in migrations/002_v21_extensions.sql migrations/003_scanner_settings.sql migrations/004_nullable_report_config.sql migrations/005_premium_bot.sql; do
+  for f in migrations/002_v21_extensions.sql migrations/003_scanner_settings.sql migrations/004_nullable_report_config.sql migrations/005_premium_bot.sql migrations/006_operator_reports.sql; do
     [[ -f "$f" ]] || continue
     docker compose exec -T postgres \
       psql -v ON_ERROR_STOP=1 -U "${POSTGRES_USER:-subio}" -d "${POSTGRES_DB:-subio}" < "$f" >/dev/null

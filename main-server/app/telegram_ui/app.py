@@ -21,6 +21,8 @@ from app.services.emoji_service import EmojiService
 from app.services.forced_channel_service import ForcedChannelService
 from app.services.message_service import MessageService
 from app.services.panel_service import PanelService
+from app.services.pipeline_events import PipelineEventService
+from app.services.report_service import ReportService
 from app.services.subscription_service import SubscriptionService
 from app.services.subscription_sync import SubscriptionSyncService
 from app.telegram_ui.context import BotServices
@@ -37,6 +39,8 @@ async def main() -> None:
     panels = PanelService(db, cipher)
     subscriptions = SubscriptionService(db, panels)
     channels = ForcedChannelService(db, cache, panels)
+    pipeline_events = PipelineEventService(db)
+    reports = ReportService(db, pipeline_events)
     fallback = None
     if settings.s3_enabled:
         fallback = S3FallbackStore(
@@ -63,6 +67,8 @@ async def main() -> None:
         ),
         distribution=DistributionService(db),
         channels=channels,
+        reports=reports,
+        pipeline_events=pipeline_events,
     )
     bot = Bot(settings.bot_token)
     dispatcher = Dispatcher(storage=RedisStorage(cache))

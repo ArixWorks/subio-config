@@ -135,6 +135,25 @@
     </section>
 
     <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
+      <div class="flex flex-wrap items-center justify-between gap-2">
+        <h2 class="font-semibold text-lg">لاگ زنده مسیر کانفیگ‌ها</h2>
+        <div class="flex items-center gap-2">
+          <input id="pipeline-filter" placeholder="فیلتر کد کانفیگ، مثال IT454"
+            class="bg-slate-950 border border-slate-700 rounded px-2 py-1 text-sm w-48" />
+          <label class="flex items-center gap-1 text-sm text-slate-400">
+            <input id="pipeline-live" type="checkbox" checked class="w-4 h-4" /> زنده
+          </label>
+          <button onclick="loadPipelineEvents()" class="bg-slate-700 hover:bg-slate-600 px-3 py-1 rounded-lg text-sm">تازه‌سازی</button>
+        </div>
+      </div>
+      <p class="text-slate-400 text-sm">
+        مسیر هر کانفیگ: دریافت از تلگرام → ارسال به سرور ایران → شناسایی کشور → تست سایت‌ها → فعال/غیرفعال‌سازی → گزارش کاربران.
+        رنگ سبز = موفق، زرد = هشدار (مثل شکست موقت یا گزارش کاربر)، قرمز = خطا/حذف.
+      </p>
+      <div id="pipeline-log" class="bg-slate-950 border border-slate-800 rounded-lg p-2 text-xs font-mono overflow-auto max-h-[28rem] space-y-1"></div>
+    </section>
+
+    <section class="bg-slate-900 border border-slate-800 rounded-xl p-4 space-y-3">
       <h2 class="font-semibold text-lg">دستیار هوش مصنوعی (Vercel Gateway)</h2>
       <p id="ai-status" class="text-slate-400 text-sm">...</p>
       <textarea id="ai-question" rows="3" placeholder="مثلاً: چرا تعداد کانفیگ سالم کم شده؟"
@@ -426,11 +445,83 @@
       await api('/admin/broadcasts', { method: 'POST', body: JSON.stringify({ message: msg, target: 'all' }) });
       toast('برودکست در صف قرار گرفت');
     }
+    const PIPELINE_STAGE_LABELS = {
+      ingested: 'دریافت از تلگرام',
+      dispatched: 'ارسال به سرور ایران',
+      country_resolved: 'شناسایی کشور',
+      tested: 'نتیجه تست',
+      promoted: 'فعال‌سازی',
+      demoted: 'غیرفعال‌سازی',
+      demote_deferred: 'شکست موقت (بدون حذف)',
+      reported: 'گزارش کاربر',
+      operator_excluded: 'حذف برای یک اپراتور',
+      globally_blocked: 'حذف کامل سراسری',
+    };
+    const PIPELINE_STATUS_STYLE = {
+      success: 'border-emerald-800 bg-emerald-950/40 text-emerald-200',
+      warning: 'border-amber-800 bg-amber-950/40 text-amber-200',
+      error: 'border-red-800 bg-red-950/40 text-red-200',
+      info: 'border-slate-800 bg-slate-900 text-slate-300',
+    };
+    let pipelineTimer = null;
+    let pipelineLastId = null;
+
+    function renderPipelineEvents(events, { append } = { append: false }) {
+      const container = document.getElementById('pipeline-log');
+      const rows = events.map(evt => {
+        const style = PIPELINE_STATUS_STYLE[evt.status] || PIPELINE_STATUS_STYLE.info;
+        const stageLabel = PIPELINE_STAGE_LABELS[evt.stage] || evt.stage;
+        const code = evt.config_code ? `#${escapeHtml(evt.config_code)}` : '—';
+        const time = evt.created_at ? new Date(evt.created_at).toLocaleTimeString('fa-IR') : '';
+        return `<div class="border rounded px-2 py-1 ${style}">
+          <span class="text-slate-400">[${time}]</span>
+          <span class="font-semibold">${escapeHtml(code)}</span>
+          <span class="opacity-80">${escapeHtml(stageLabel)}:</span>
+          ${escapeHtml(evt.message || '')}
+        </div>`;
+      });
+      if (append) {
+        container.insertAdjacentHTML('afterbegin', rows.join(''));
+      } else {
+        container.innerHTML = rows.join('') || '<p class="text-slate-500">هنوز رویدادی ثبت نشده است.</p>';
+      }
+      const MAX_ROWS = 300;
+      while (container.children.length > MAX_ROWS) {
+        container.removeChild(container.lastElementChild);
+      }
+    }
+
+    async function loadPipelineEvents() {
+      const filter = document.getElementById('pipeline-filter').value.trim().toUpperCase().replace(/^#/, '');
+      const events = await api(`/admin/pipeline/events?limit=150`);
+      const filtered = filter ? events.filter(e => (e.config_code || '').toUpperCase().includes(filter)) : events;
+      renderPipelineEvents(filtered, { append: false });
+      pipelineLastId = events.length ? events[0].id : pipelineLastId;
+    }
+
+    async function pollPipelineEvents() {
+      if (!document.getElementById('pipeline-live').checked) return;
+      try {
+        const events = await api(`/admin/pipeline/events?limit=50`);
+        if (!events.length) return;
+        const filter = document.getElementById('pipeline-filter').value.trim().toUpperCase().replace(/^#/, '');
+        const newest = pipelineLastId ? events.filter(e => e.id > pipelineLastId) : events;
+        if (!newest.length) return;
+        const filtered = filter ? newest.filter(e => (e.config_code || '').toUpperCase().includes(filter)) : newest;
+        if (filtered.length) renderPipelineEvents(filtered.slice().reverse(), { append: true });
+        pipelineLastId = events[0].id;
+      } catch (_) {
+        // Silent: live polling must not spam the toast on transient errors.
+      }
+    }
+    document.getElementById('pipeline-filter').addEventListener('change', loadPipelineEvents);
+
     // boot
     const saved = localStorage.getItem(TOKEN_KEY);
     if (saved) {
       document.getElementById('token').value = saved;
-      refresh().catch(() => {});
+      refresh().then(loadPipelineEvents).catch(() => {});
+      pipelineTimer = setInterval(pollPipelineEvents, 4000);
     }
   </script>
 </body>

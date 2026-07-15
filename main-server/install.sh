@@ -266,6 +266,7 @@ apply_sql migrations/002_v21_extensions.sql
 apply_sql migrations/003_scanner_settings.sql
 apply_sql migrations/004_nullable_report_config.sql
 apply_sql migrations/005_premium_bot.sql
+apply_sql migrations/006_operator_reports.sql
 ok "Migrations applied"
 
 info "Starting application services..."
@@ -312,7 +313,7 @@ case "\${1:-}" in
   logs)    shift; docker compose logs -f --tail=200 "\$@" ;;
   ps)      docker compose ps ;;
   pull)    docker compose pull; docker compose build --pull; docker compose ${PROFILE_ARGS} up -d ;;
-  migrate) for f in migrations/002_v21_extensions.sql migrations/003_scanner_settings.sql migrations/004_nullable_report_config.sql migrations/005_premium_bot.sql; do docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U ${POSTGRES_USER:-subio} -d ${POSTGRES_DB:-subio} < "\$f"; done ;;
+  migrate) for f in migrations/002_v21_extensions.sql migrations/003_scanner_settings.sql migrations/004_nullable_report_config.sql migrations/005_premium_bot.sql migrations/006_operator_reports.sql; do docker compose exec -T postgres psql -v ON_ERROR_STOP=1 -U ${POSTGRES_USER:-subio} -d ${POSTGRES_DB:-subio} < "\$f"; done ;;
   *) echo "Usage: subio-main {up|down|restart|logs|ps|pull|migrate}"; exit 1 ;;
 esac
 EOF

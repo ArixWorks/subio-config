@@ -13,6 +13,8 @@ from app.services.emoji_service import EmojiService
 from app.services.forced_channel_service import ForcedChannelService
 from app.services.message_service import MessageService
 from app.services.panel_service import PanelService
+from app.services.pipeline_events import PipelineEventService
+from app.services.report_service import ReportService
 from app.services.subscription_service import SubscriptionService
 from app.services.subscription_sync import SubscriptionSyncService
 
@@ -29,3 +31,5 @@ class BotServices:
     subscription_sync: SubscriptionSyncService
     distribution: DistributionService
     channels: ForcedChannelService
+    reports: ReportService
+    pipeline_events: PipelineEventService
