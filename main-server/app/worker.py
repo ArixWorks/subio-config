@@ -12,6 +12,7 @@ from app.ai.scanner_advisor import recommend_scanner_settings
 from app.communication import CircuitBreaker, ResilientTesterClient
 from app.config import get_settings
 from app.db import Database
+from app.logging import configure_logging
 from app.s3_transport import S3FallbackStore
 from app.security import PayloadCipher
 from app.services.broadcast_service import BroadcastService
@@ -29,6 +30,7 @@ from redis.asyncio import Redis
 
 async def startup(ctx: dict[str, Any]) -> None:
     settings = get_settings()
+    configure_logging(settings.log_level)
     db = Database(settings.database_url)
     cipher = PayloadCipher(settings.payload_encryption_key)
     fallback = None

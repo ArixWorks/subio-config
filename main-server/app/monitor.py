@@ -13,6 +13,7 @@ from app.ai.gateway import get_gateway
 from app.ai.security_filter import security_filter
 from app.config import get_settings
 from app.db import Database
+from app.logging import configure_logging
 from app.security import PayloadCipher
 from app.services.scanner_pipeline import extract_configs_from_event
 from app.services.scanner_settings_service import ScannerSettingsService
@@ -74,6 +75,7 @@ def _source_name(chat: object, chat_id: int) -> str:
 
 async def main() -> None:
     settings = get_settings()
+    configure_logging(settings.log_level)
     if not all((settings.telethon_api_id, settings.telethon_api_hash, settings.telethon_session)):
         raise RuntimeError("Telethon monitoring variables are incomplete")
 
