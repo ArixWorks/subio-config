@@ -104,3 +104,127 @@ async def test_queue_untested_public_configs_skips_poison_pill_and_continues() -
     assert service.attempted == ["poison", "healthy-1", "healthy-2"]
     # Only the two healthy configs count toward the returned "queued" total.
     assert queued == 2
+
+
+class _FakeTransitionResult:
+    def __init__(self, row: dict[str, Any] | None) -> None:
+        self._row = row
+
+    def mappings(self) -> "_FakeTransitionResult":
+        return self
+
+    def first(self) -> dict[str, Any] | None:
+        return self._row
+
+
+class _FakeTransitionConnection:
+    """Simulates the vpn_configs row's consecutive_failures/is_enabled columns
+    across successive UPDATE ... RETURNING calls, exactly like Postgres would."""
+
+    def __init__(self, state: dict[str, Any]) -> None:
+        self._state = state
+
+    async def execute(self, _statement: Any, params: dict[str, Any]) -> _FakeTransitionResult:
+        threshold = params["threshold"]
+        self._state["consecutive_failures"] += 1
+        if self._state["consecutive_failures"] >= threshold:
+            self._state["is_enabled"] = False
+        return _FakeTransitionResult(dict(self._state))
+
+
+class _FakeTransitionDatabase:
+    """Minimal stand-in exposing only what _apply_pool_transition touches for a
+    single config row, tracking consecutive_failures/is_enabled like the real
+    UPDATE ... RETURNING statement would."""
+
+    def __init__(self) -> None:
+        self.state: dict[str, Any] = {"consecutive_failures": 0, "is_enabled": True}
+
+    @asynccontextmanager
+    async def connection(self):
+        yield _FakeTransitionConnection(self.state)
+
+    async def execute(self, *_args: Any, **_kwargs: Any) -> None:
+        return None
+
+
+@pytest.mark.asyncio
+async def test_retest_healthy_failure_does_not_demote_before_threshold(monkeypatch) -> None:
+    """A healthy config that fails one 'cheap' retest_healthy probe must stay
+    enabled — it should only be evicted from the public feed after
+    `retest_demote_failure_threshold` *consecutive* failures. This prevents a
+    genuinely healthy but higher-latency config from flapping in and out of the
+    public subscription due to a single transient timeout.
+    """
+    from app import config as config_module
+
+    settings = config_module.Settings.model_construct(retest_demote_failure_threshold=2)
+    monkeypatch.setattr(config_module, "get_settings", lambda: settings)
+
+    db = _FakeTransitionDatabase()
+    service = ConfigTesterService(db, tester=None, cipher=_cipher(), scanner_settings=None)  # type: ignore[arg-type]
+
+    # First consecutive failure: must remain enabled (below threshold).
+    await service._apply_pool_transition(
+        config_id="cfg-1",
+        uri="ss://ok@203.0.113.9:9",
+        protocol="ss",
+        result={"latency_ms": 500},
+        score=10.0,
+        reachable=False,
+        mode="cheap",
+        purpose="retest_healthy",
+        demote_on_first_fail=True,
+    )
+    assert db.state["is_enabled"] is True
+    assert db.state["consecutive_failures"] == 1
+
+    # Second consecutive failure: threshold reached, now demoted.
+    await service._apply_pool_transition(
+        config_id="cfg-1",
+        uri="ss://ok@203.0.113.9:9",
+        protocol="ss",
+        result={"latency_ms": 500},
+        score=10.0,
+        reachable=False,
+        mode="cheap",
+        purpose="retest_healthy",
+        demote_on_first_fail=True,
+    )
+    assert db.state["is_enabled"] is False
+    assert db.state["consecutive_failures"] == 2
+
+
+@pytest.mark.asyncio
+async def test_discovery_failure_still_demotes_immediately(monkeypatch) -> None:
+    """Non-retest_healthy failure paths (e.g. initial "discover" testing) must
+    keep the original immediate-demote behavior — the consecutive-failure
+    grace period only applies to the tight-cadence healthy-pool retest.
+    """
+    from app import config as config_module
+
+    settings = config_module.Settings.model_construct(retest_demote_failure_threshold=2)
+    monkeypatch.setattr(config_module, "get_settings", lambda: settings)
+
+    executed: list[tuple[str, dict[str, Any] | None]] = []
+
+    class _Database:
+        async def execute(self, statement: str, values: dict[str, Any] | None = None) -> None:
+            executed.append((statement, values))
+
+    service = ConfigTesterService(_Database(), tester=None, cipher=_cipher(), scanner_settings=None)  # type: ignore[arg-type]
+
+    await service._apply_pool_transition(
+        config_id="cfg-2",
+        uri="ss://dead@203.0.113.10:10",
+        protocol="ss",
+        result={"latency_ms": None},
+        score=0.0,
+        reachable=False,
+        mode="full",
+        purpose="discover",
+        demote_on_first_fail=True,
+    )
+
+    assert len(executed) == 1
+    assert "is_enabled=FALSE" in executed[0][0]

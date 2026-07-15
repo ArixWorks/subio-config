@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     retest_dead_interval_seconds: int = Field(default=180, ge=30, le=3600)
     retest_dead_batch: int = Field(default=5, ge=1, le=30)
     retest_demote_on_first_fail: bool = True
+    # A healthy config must fail this many *consecutive* retest_healthy probes
+    # before it is evicted from the public feed. This absorbs single transient
+    # timeouts (e.g. a slow-but-fine config failing one "cheap" probe) without
+    # flapping it in and out of the subscription.
+    retest_demote_failure_threshold: int = Field(default=2, ge=1, le=10)
 
     @field_validator("admin_telegram_ids")
     @classmethod

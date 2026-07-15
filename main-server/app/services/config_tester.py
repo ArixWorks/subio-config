@@ -310,13 +310,66 @@ class ConfigTesterService:
             except Exception:
                 logger.exception("ai_naming_failed")
 
-        # Immediate demotion when healthy dies (Iran cheap fail).
-        demote = (not reachable) and (
-            demote_on_first_fail or purpose.startswith("retest_healthy")
-        )
+        # A failure candidate: this probe found the config unreachable.
+        is_healthy_retest = purpose.startswith("retest_healthy")
+        demote_candidate = (not reachable) and (demote_on_first_fail or is_healthy_retest)
+
         promote = reachable and score >= 50 and mode == "full"
 
-        if demote:
+        if demote_candidate:
+            if is_healthy_retest:
+                # The healthy pool is retested on a tight cheap-probe cadence.
+                # A single transient timeout (e.g. a "cheap" probe glitch on an
+                # otherwise healthy, higher-latency config) must not evict it
+                # from the public feed — only `retest_demote_failure_threshold`
+                # *consecutive* failures do. Every other failure path (initial
+                # discovery, dead-pool retests) keeps the original
+                # immediate-demote behavior below.
+                settings = get_settings()
+                async with self._db.connection() as conn:
+                    from sqlalchemy import text
+
+                    updated = (
+                        await conn.execute(
+                            text(
+                                """
+                                UPDATE vpn_configs
+                                SET score=:score,
+                                    latency_ms=:latency,
+                                    tested_at=now(),
+                                    consecutive_failures=consecutive_failures + 1,
+                                    is_enabled=CASE
+                                        WHEN consecutive_failures + 1 >= :threshold THEN FALSE
+                                        ELSE is_enabled
+                                    END,
+                                    transport_type=:transport,
+                                    display_name=COALESCE(display_name, :display)
+                                WHERE id=:id
+                                RETURNING consecutive_failures, is_enabled
+                                """
+                            ),
+                            {
+                                "score": min(score, 10.0),
+                                "latency": result.get("latency_ms"),
+                                "transport": transport,
+                                "display": display,
+                                "threshold": settings.retest_demote_failure_threshold,
+                                "id": config_id,
+                            },
+                        )
+                    ).mappings().first()
+                if updated is not None:
+                    logger.info(
+                        "config_demoted" if not updated["is_enabled"] else "config_demote_deferred",
+                        extra={
+                            "id": config_id,
+                            "purpose": purpose,
+                            "mode": mode,
+                            "consecutive_failures": updated["consecutive_failures"],
+                        },
+                    )
+                return
+
             await self._db.execute(
                 """
                 UPDATE vpn_configs
